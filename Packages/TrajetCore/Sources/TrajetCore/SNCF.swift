@@ -148,6 +148,13 @@ public struct TrainSchedule: Sendable {
     public let referenceDay: Day
     public let exact: Bool
     public let journeys: [TrainJourney]
+
+    public init(day: Day, referenceDay: Day, exact: Bool, journeys: [TrainJourney]) {
+        self.day = day
+        self.referenceDay = referenceDay
+        self.exact = exact
+        self.journeys = journeys
+    }
 }
 
 public struct SNCFClient: Sendable {
