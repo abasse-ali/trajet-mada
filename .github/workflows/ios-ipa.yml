@@ -33,7 +33,6 @@ jobs:
 
   ipa:
     needs: tests
-    if: hashFiles('project.yml') != ''
     runs-on: macos-26
     timeout-minutes: 60
     steps:
