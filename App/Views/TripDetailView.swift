@@ -206,9 +206,10 @@ struct StepRow: View {
                         .foregroundStyle(.secondary)
                     Text(flexibleDate
                          ? "Date libre · \(Fmt.duration(option.durationMin))"
-                         : "\(Fmt.dayLong(step.day)) · vers \(Fmt.clock(step.startMinute)) · \(Fmt.duration(option.durationMin))")
+                         : "\(Fmt.dayLong(step.day)) · \(Fmt.duration(option.durationMin))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 4) {

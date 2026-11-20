@@ -9,3 +9,4 @@ Payload/
 xcuserdata/
 Config/Info.plist
 *.log
+dist/
