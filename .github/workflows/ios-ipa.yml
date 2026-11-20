@@ -31,6 +31,26 @@ jobs:
           name: swift-test-log
           path: swift-test.log
 
+  serveur:
+    # Vérifie le script de mise à jour des prix sur Linux, comme sur le serveur Oracle.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntaxe de l'installateur et du script
+        run: |
+          bash -n server/install.sh
+          python3 --version
+          python3 -m py_compile server/trajetmada_update.py
+
+      - name: Mise à jour rapide (sans clé ni publication)
+        run: |
+          mkdir -p /tmp/trajetmada
+          OUTPUT_DIR=/tmp/trajetmada python3 server/trajetmada_update.py --quick --no-publish --config /dev/null
+          python3 -c "import json; d = json.load(open('/tmp/trajetmada/trajetmada-data.json')); print(d['stats']); assert d['trainGrid'], 'grille SNCF vide'"
+          cat /tmp/trajetmada/rapport.md
+
   ipa:
     needs: tests
     runs-on: macos-26

@@ -11,9 +11,9 @@ public enum QuoteSource: String, Codable, Sendable {
 
     public var label: String {
         switch self {
-        case .travelpayouts: return "Aviasales (cache 2 à 7 jours)"
-        case .serpapi: return "Google Flights (temps réel)"
-        case .flixbus: return "FlixBus (temps réel)"
+        case .travelpayouts: return "Aviasales (prix vus récemment)"
+        case .serpapi: return "Google Flights"
+        case .flixbus: return "FlixBus"
         case .sncf: return "SNCF open data"
         }
     }
@@ -77,11 +77,22 @@ public struct PriceBook: Codable, Sendable {
          bus.values.reduce(0) { $0 + $1.count })
     }
 
-    /// Garde le meilleur prix ; un prix vérifié en direct remplace toujours un prix en cache.
+    /// Règles de remplacement :
+    /// - un prix vérifié (Google Flights, FlixBus) l'emporte sur un prix en cache, sauf s'il a plus de 2 jours de retard ;
+    /// - entre deux prix de même nature, le plus récent l'emporte ;
+    /// - dans un même relevé (moins d'une heure d'écart), on garde le moins cher.
     public mutating func put(_ quote: Quote, in store: WritableKeyPath<PriceBook, [String: [String: Quote]]>,
                              key: String, sub: String) {
         if let current = self[keyPath: store][key]?[sub] {
-            if !quote.source.isLive && (current.source.isLive || current.price <= quote.price) { return }
+            let newer = quote.fetchedAt.timeIntervalSince(current.fetchedAt)
+            if quote.source.isLive != current.source.isLive {
+                if current.source.isLive && newer < 172_800 { return }
+                if !current.source.isLive && newer < -172_800 { return }
+            } else if abs(newer) < 3600 {
+                if current.price <= quote.price { return }
+            } else if newer < 0 {
+                return
+            }
         }
         self[keyPath: store][key, default: [:]][sub] = quote
     }

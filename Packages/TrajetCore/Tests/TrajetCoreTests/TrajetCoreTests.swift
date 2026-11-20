@@ -178,6 +178,78 @@ final class EngineTests: XCTestCase {
     }
 }
 
+final class FeedTests: XCTestCase {
+    // Fichier réel produit par server/trajetmada_update.py (réduit ; vols ajoutés au même format).
+    static let json = """
+    {"version":1,"generatedAt":"2026-11-20T23:37:50Z","period":{"start":"2027-05-01","end":"2027-09-30"},"stay":{"min":28,"max":30},"adults":1,
+    "trainGrid":{"tgv":{"min":25.5,"max":143.0,"source":"open data SNCF"},"ouigo":{"min":19.0,"max":119.0,"source":"open data SNCF"},"intercites-nuit":{"min":29.0,"max":142.0,"source":"open data SNCF"}},
+    "sncfWindow":{"start":"2026-11-18","end":"2026-12-17"},
+    "bus":[{"from":"TLS_V","to":"PAR_G","day":"2027-05-10","price":36.99,"source":"flixbus","carrier":"FlixBus","detail":"depart 21:25 - arrivee 06:25 - 49 places","link":"https://shop.flixbus.fr/search?rideDate=10.05.2027","fetchedAt":"2026-11-20T23:38:00Z"},
+           {"from":"PAR_G","to":"TLS_V","day":"2027-05-10","price":35.99,"source":"flixbus","carrier":"FlixBus","detail":"depart 20:50","link":null,"fetchedAt":"2026-11-20T23:38:00Z"}],
+    "schedules":[{"from":"TLS_V","to":"PAR_G","day":null,"weekday":1,"referenceDay":"2026-11-22","exact":false,"journeys":[
+      {"departure":"05:39","arrival":"12:18","arrivalDayOffset":0,"durationMin":399,"transfers":1,"trains":["liO 876203","TGV INOUI 6202"],"modes":["liO","TGV INOUI"],"fare":null},
+      {"departure":"07:37","arrival":"13:54","arrivalDayOffset":0,"durationMin":377,"transfers":1,"trains":["TGV INOUI 6871","OUIGO 7876"],"modes":["TGV INOUI","OUIGO"],"fare":null}]}],
+    "oneWay":[{"from":"PAR","to":"TNR","day":"2027-05-10","price":612.0,"source":"travelpayouts","carrier":"AF","transfers":0,"detail":"AF 934 - direct","fetchedAt":"2026-11-20T23:37:50Z","link":"https://www.aviasales.com/search/PAR1005TNR1"}],
+    "roundTrip":[{"from":"PAR","to":"TNR","out":"2027-05-10","back":"2027-06-08","price":980.0,"source":"serpapi","carrier":"Air France","detail":"Air France","link":"https://www.google.com/travel/flights?tfs=x","fetchedAt":"2026-11-20T23:37:50Z"}],
+    "stats":{"oneWay":0,"roundTrip":0,"serpapi":0,"bus":306,"schedules":28,"requests":337,"failures":0,"errors":0,"warnings":1}}
+    """
+
+    func testDecodeAndMerge() throws {
+        let feed = try FeedReader.decode(Data(Self.json.utf8))
+        XCTAssertEqual(feed.stats?["bus"], 306)
+        let merged = FeedReader.merge(feed, into: PriceBook())
+        XCTAssertEqual(merged.added, 4)
+        let book = merged.book
+        XCTAssertEqual(book.oneWay["PAR>TNR"]?["2027-05-10"]?.price, 612)
+        XCTAssertEqual(book.roundTrip["PAR>TNR"]?["2027-05-10|2027-06-08"]?.source, .serpapi)
+        XCTAssertEqual(book.bus["TLS_V>PAR_G"]?["2027-05-10"]?.price, 36.99)
+        XCTAssertEqual(book.trainGrid["ouigo"]?.max, 119)
+        let fetched = book.bus["TLS_V>PAR_G"]?["2027-05-10"]?.fetchedAt
+        XCTAssertEqual(fetched, FeedReader.date("2026-11-20T23:38:00Z"))
+    }
+
+    func testOldLiveQuoteIsNoLongerLive() throws {
+        let feed = try FeedReader.decode(Data(Self.json.utf8))
+        let book = FeedReader.merge(feed, into: PriceBook()).book
+        let params = SearchParams.defaults(today: Day(year: 2026, month: 11, day: 20))
+        let engine = RouteEngine(params: params, book: book)
+        let bus = NetworkData.connections.first { $0.id == "TLS_V-PAR_G" }!.options.first { $0.kind == .flixbus }!
+        let priced = engine.priceOption(bus, from: .toulouse, to: .parisStations, day: Day(year: 2027, month: 5, day: 10))
+        XCTAssertEqual(priced.price, 36.99)
+        // Relevé par le serveur il y a plus de 3 heures : prix réel, mais plus « temps réel ».
+        XCTAssertEqual(priced.quality, .cached)
+    }
+
+    func testTypicalSchedulesByWeekday() throws {
+        let feed = try FeedReader.decode(Data(Self.json.utf8))
+        let schedules = FeedReader.schedules(feed)
+        XCTAssertEqual(schedules.typical.count, 1)
+        // Le 2 mai 2027 est un dimanche (jour 1), comme le 22 novembre 2026.
+        let sunday = Day(year: 2027, month: 5, day: 2)
+        XCTAssertEqual(sunday.weekday, 1)
+        let schedule = schedules.schedule(from: .toulouse, to: .parisStations, day: sunday)
+        XCTAssertNotNil(schedule)
+        XCTAssertEqual(schedule?.exact, false)
+        XCTAssertEqual(schedule?.day, sunday)
+        XCTAssertEqual(schedule?.referenceDay, Day(year: 2026, month: 11, day: 22))
+        XCTAssertEqual(schedule?.journeys.last?.trains, ["TGV INOUI 6871", "OUIGO 7876"])
+        XCTAssertNil(schedules.schedule(from: .toulouse, to: .parisStations, day: Day(year: 2027, month: 5, day: 3)))
+    }
+
+    func testFresherCachedPriceReplacesOlderOne() {
+        var book = PriceBook()
+        let day = Day(year: 2027, month: 5, day: 10)
+        let old = Date(timeIntervalSinceNow: -3 * 86_400)
+        book.putOneWay(Quote(price: 500, source: .travelpayouts, fetchedAt: old), from: .parisAirports, to: .tana, day: day)
+        book.putOneWay(Quote(price: 640, source: .travelpayouts), from: .parisAirports, to: .tana, day: day)
+        XCTAssertEqual(book.oneWay["PAR>TNR"]?[day.key]?.price, 640, "le relevé le plus récent l'emporte")
+        book.putOneWay(Quote(price: 600, source: .travelpayouts), from: .parisAirports, to: .tana, day: day)
+        XCTAssertEqual(book.oneWay["PAR>TNR"]?[day.key]?.price, 600, "même relevé : le moins cher")
+        book.putOneWay(Quote(price: 700, source: .travelpayouts, fetchedAt: old), from: .parisAirports, to: .tana, day: day)
+        XCTAssertEqual(book.oneWay["PAR>TNR"]?[day.key]?.price, 600, "un relevé plus ancien est ignoré")
+    }
+}
+
 final class LinkTests: XCTestCase {
     let par = NetworkData.place(.parisAirports).airport!
     let tnr = NetworkData.place(.tana).airport!

@@ -49,6 +49,40 @@ elle reste valable un an.
 | [API SNCF](https://numerique.sncf.com/startup/api/) | vrais horaires des trains (publiés environ 1 mois à l'avance) | gratuit |
 | Open data SNCF | grille officielle des prix TGV, OUIGO, Intercités | sans clé |
 
+## Serveur de mise à jour quotidienne (Oracle Cloud)
+
+Le script [server/trajetmada_update.py](server/trajetmada_update.py) (Python 3.6+, sans dépendance)
+relève chaque matin, sur toute la période :
+
+- les prix des vols (Travelpayouts : allers simples et allers-retours) ;
+- les prix FlixBus Toulouse ⇄ Paris pour chaque jour (environ 300 prix) ;
+- la grille officielle des prix SNCF ;
+- les horaires SNCF (jours publiés et horaires types par jour de semaine) ;
+- une vérification Google Flights des allers-retours les moins chers (5 recherches SerpApi par jour).
+
+Il écrit `trajetmada-data.json` et un résumé lisible `rapport.md`, puis les publie sur la branche
+`data` de ce dépôt. L'app les télécharge à l'ouverture (Réglages, « Données du serveur »).
+
+Installation sur la machine Oracle (Oracle Linux ou Ubuntu), en une commande :
+
+```
+curl -fsSL https://raw.githubusercontent.com/abasse-ali/trajet-mada/main/server/install.sh | bash
+```
+
+L'installateur demande les clés (gardées dans `~/.config/trajetmada/config.env`, lisible par vous
+seul), programme la tâche quotidienne (cron, 6 h), lance un premier passage et affiche une clé
+publique à ajouter une fois au dépôt (Settings, Deploy keys, « Allow write access »).
+
+Commandes utiles sur le serveur :
+
+| Action | Commande |
+|---|---|
+| Lancer une mise à jour | `python3 ~/trajetmada/app/server/trajetmada_update.py` |
+| Test rapide sans publier | `python3 ~/trajetmada/app/server/trajetmada_update.py --quick --no-publish` |
+| Voir le dernier résumé | `cat ~/trajetmada/data/rapport.md` |
+| Journal des passages | `tail -n 50 ~/trajetmada/update.log` |
+| Modifier les clés | `nano ~/.config/trajetmada/config.env` |
+
 ## Développement
 
 - `Packages/TrajetCore` : moteur et API (Swift Package), testé par `swift test`.

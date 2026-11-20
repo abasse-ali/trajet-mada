@@ -1,4 +1,4 @@
-﻿import Foundation
+import Foundation
 
 public enum HTTPError: LocalizedError {
     case status(Int, String)
@@ -9,12 +9,12 @@ public enum HTTPError: LocalizedError {
         case .status(let code, let body):
             return "HTTP \(code)" + (body.isEmpty ? "" : " : \(body.prefix(160))")
         case .invalidResponse:
-            return "RÃ©ponse invalide"
+            return "Réponse invalide"
         }
     }
 }
 
-/// Masque les clÃ©s d'API dans les URL Ã©crites au journal.
+/// Masque les clés d'API dans les URL écrites au journal.
 public enum Redact {
     static let secretNames: Set<String> = ["token", "api_key", "apikey", "key"]
 
@@ -27,7 +27,7 @@ public enum Redact {
     }
 }
 
-/// Client HTTP qui journalise chaque requÃªte (URL sans clÃ©, code, durÃ©e, taille).
+/// Client HTTP qui journalise chaque requête (URL sans clé, code, durée, taille).
 public struct HTTPClient: Sendable {
     public let log: LogStore
     public let session: URLSession
@@ -37,8 +37,9 @@ public struct HTTPClient: Sendable {
         self.session = session
     }
 
+    /// `quiet` : les échecs sont notés en simple détail (pour une source facultative).
     public func get(_ url: URL, label: String, timeout: TimeInterval = 30,
-                    headers: [String: String] = [:]) async throws -> Data {
+                    headers: [String: String] = [:], quiet: Bool = false) async throws -> Data {
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
@@ -49,7 +50,8 @@ public struct HTTPClient: Sendable {
             guard let http = response as? HTTPURLResponse else { throw HTTPError.invalidResponse }
             if !(200..<300).contains(http.statusCode) {
                 let body = String(data: data.prefix(400), encoding: .utf8) ?? ""
-                log.error(.api, "\(label) : HTTP \(http.statusCode) (\(millis) ms)", details: "\(Redact.url(url))\n\(body)")
+                log.log(quiet ? .debug : .error, .api, "\(label) : HTTP \(http.statusCode) (\(millis) ms)",
+                        details: "\(Redact.url(url))\n\(body)")
                 throw HTTPError.status(http.statusCode, body)
             }
             log.debug(.api, "\(label) : \(http.statusCode), \(millis) ms, \(data.count) octets", details: Redact.url(url))
@@ -58,13 +60,14 @@ public struct HTTPClient: Sendable {
             throw error
         } catch {
             let millis = Int(Date().timeIntervalSince(started) * 1000)
-            log.error(.api, "\(label) : Ã©chec aprÃ¨s \(millis) ms", details: "\(Redact.url(url))\n\(error.localizedDescription)")
+            log.log(quiet ? .debug : .error, .api, "\(label) : échec après \(millis) ms",
+                    details: "\(Redact.url(url))\n\(error.localizedDescription)")
             throw error
         }
     }
 }
 
-/// Espace les requÃªtes pour respecter les limites des API.
+/// Espace les requêtes pour respecter les limites des API.
 public actor RateLimiter {
     private var nextSlot = Date.distantPast
     private let interval: TimeInterval
@@ -84,7 +87,7 @@ public actor RateLimiter {
     }
 }
 
-/// ExÃ©cute `transform` sur chaque Ã©lÃ©ment avec au plus `limit` tÃ¢ches en parallÃ¨le.
+/// Exécute `transform` sur chaque élément avec au plus `limit` tâches en parallèle.
 public func boundedConcurrentMap<T: Sendable, R: Sendable>(
     _ items: [T], limit: Int, _ transform: @escaping @Sendable (T) async -> R
 ) async -> [R] {

@@ -226,9 +226,11 @@ struct StepRow: View {
             }
 
             if let quote = step.chosen.quote {
-                Text(quote.source.label + (quote.detail.map { " · " + $0 } ?? ""))
+                Text(quote.source.label + (quote.detail.map { " · " + $0 } ?? "")
+                     + (quote.source == .sncf ? "" : " · relevé \(Fmt.age(quote.fetchedAt))"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Text("Fréquence : \(option.frequency)")
                 .font(.caption)
@@ -330,14 +332,7 @@ struct TrainScheduleView: View {
         let key = AppModel.scheduleKey(step)
         let preferred = step.chosen.option.sncfMode
         Group {
-            if !model.hasSNCF {
-                HStack(spacing: 6) {
-                    Icon("mode.train", size: 13, color: .secondary)
-                    Text("Horaires des trains : ajoutez votre clé API SNCF dans Réglages.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else if let schedule = model.schedules[key] {
+            if let schedule = model.schedules[key] {
                 DisclosureGroup(isExpanded: $expanded) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(schedule.exact
@@ -361,6 +356,14 @@ struct TrainScheduleView: View {
                         Text("Horaires SNCF : \(schedule.journeys.count) train\(schedule.journeys.count > 1 ? "s" : "")\(schedule.exact ? "" : " (horaires types)")")
                             .font(.footnote.weight(.semibold))
                     }
+                }
+            } else if !model.hasSNCF {
+                HStack(alignment: .top, spacing: 6) {
+                    Icon("mode.train", size: 13, color: .secondary)
+                    Text("Horaires des trains : ajoutez votre clé API SNCF dans Réglages, ou installez le serveur de mise à jour.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             } else if let error = model.scheduleErrors[key] {
                 HStack(alignment: .top, spacing: 6) {
@@ -430,8 +433,10 @@ struct TicketRow: View {
                 .foregroundStyle(.secondary)
             HStack(spacing: 6) {
                 QualityPill(quality: ticket.quality)
-                if let detail = ticket.quote?.detail {
-                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                if let quote = ticket.quote {
+                    Text((quote.detail.map { $0 + " · " } ?? "") + "relevé \(Fmt.age(quote.fetchedAt))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             BookingLinks(links: links)

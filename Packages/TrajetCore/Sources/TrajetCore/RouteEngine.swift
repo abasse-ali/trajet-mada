@@ -135,6 +135,12 @@ public struct RouteEngine: Sendable {
     let calibration: [String: Double]
     let days: [Day]
     let dayIndex: [Day: Int]
+    /// Un prix « vérifié » n'est affiché en temps réel que s'il date de moins de 3 heures.
+    let now = Date()
+
+    func quality(of quote: Quote) -> PriceQuality {
+        quote.source.isLive && now.timeIntervalSince(quote.fetchedAt) < 3 * 3600 ? .live : .cached
+    }
 
     struct PathCalc: Sendable {
         let index: Int
@@ -191,14 +197,13 @@ public struct RouteEngine: Sendable {
         case .flight:
             let route = PriceBook.key(from, to)
             if let quote = book.oneWay[route]?[day.key] {
-                return PricedOption(option: option, price: quote.price * mult,
-                                    quality: quote.source.isLive ? .live : .cached, quote: quote)
+                return PricedOption(option: option, price: quote.price * mult, quality: quality(of: quote), quote: quote)
             }
             let fallback = calibration["\(route)#\(day.monthKey)"] ?? calibration[route] ?? option.priceTypical
             return PricedOption(option: option, price: fallback * mult, quality: .estimate, quote: nil)
         case .flixbus:
             if let quote = book.bus[PriceBook.key(from, to)]?[day.key] {
-                return PricedOption(option: option, price: quote.price * mult, quality: .live, quote: quote)
+                return PricedOption(option: option, price: quote.price * mult, quality: quality(of: quote), quote: quote)
             }
             return PricedOption(option: option, price: option.priceTypical * mult, quality: .estimate, quote: nil)
         case .estimate:
@@ -256,8 +261,7 @@ public struct RouteEngine: Sendable {
             if roundTrip < separate {
                 savings += separate - roundTrip
                 tickets.append(RoundTripTicket(from: o.from, to: o.to, outDay: o.day, backDay: b.day,
-                                               price: roundTrip, quality: quote.source.isLive ? .live : .cached,
-                                               quote: quote))
+                                               price: roundTrip, quality: quality(of: quote), quote: quote))
             }
         }
         return (savings, tickets)

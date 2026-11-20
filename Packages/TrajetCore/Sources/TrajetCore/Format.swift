@@ -37,6 +37,15 @@ public enum Fmt {
         "\(weekdays[d.weekday - 1]) \(d.day) \(months[d.month - 1]) \(d.year)"
     }
 
+    /// « à l'instant », « il y a 3 h », « le 21 nov. »
+    public static func age(_ date: Date, now: Date = Date()) -> String {
+        let seconds = now.timeIntervalSince(date)
+        if seconds < 120 { return "à l'instant" }
+        if seconds < 3600 { return "il y a \(Int(seconds / 60)) min" }
+        if seconds < 86_400 { return "il y a \(Int(seconds / 3600)) h" }
+        return "le \(dayShort(Day(localDate: date)))"
+    }
+
     /// « 08:35 »
     public static func clock(_ minuteOfDay: Int) -> String {
         let m = ((minuteOfDay % 1440) + 1440) % 1440

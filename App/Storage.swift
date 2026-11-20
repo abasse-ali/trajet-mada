@@ -52,6 +52,14 @@ enum Persist {
         return try? JSONDecoder().decode(T.self, from: data)
     }
 
+    static func saveData(_ data: Data, _ name: String) {
+        try? data.write(to: directory.appendingPathComponent(name), options: .atomic)
+    }
+
+    static func loadData(_ name: String) -> Data? {
+        try? Data(contentsOf: directory.appendingPathComponent(name))
+    }
+
     static func remove(_ name: String) {
         try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
     }

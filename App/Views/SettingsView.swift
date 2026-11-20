@@ -20,11 +20,51 @@ struct SettingsForm: View {
     @State private var travelpayouts = ""
     @State private var serpapi = ""
     @State private var sncf = ""
+    @State private var feedURL = ""
+    @State private var feedAuto = true
     @State private var saved = false
     @State private var confirmClear = false
 
     var body: some View {
         Form {
+            Section {
+                Toggle("Mettre à jour à l'ouverture", isOn: $feedAuto)
+                TextField("Adresse des données", text: $feedURL, axis: .vertical)
+                    .font(.footnote.monospaced())
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                Button {
+                    model.saveFeedSettings(url: feedURL, autoUpdate: feedAuto)
+                    Task { await model.syncFeed() }
+                } label: {
+                    HStack(spacing: 8) {
+                        if model.isSyncingFeed {
+                            ProgressView()
+                        } else {
+                            Icon("ui.refresh", size: 16, color: .accentColor)
+                        }
+                        Text("Mettre à jour maintenant")
+                    }
+                }
+                .disabled(model.isSyncingFeed)
+                if let date = model.feedDate {
+                    LabeledContent("Dernières données", value: Fmt.age(date))
+                }
+                if let status = model.feedStatus {
+                    Text(status)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Données du serveur (mise à jour quotidienne)")
+            } footer: {
+                Text("Votre serveur Oracle relève chaque matin les prix des vols, de FlixBus, la grille SNCF et les horaires des trains, puis les publie. L'app les récupère ici, même sans clé sur l'iPhone.")
+            }
+            .onChange(of: feedAuto) { _, value in
+                model.saveFeedSettings(url: feedURL, autoUpdate: value)
+            }
+
             Section {
                 SecureField("Jeton API Travelpayouts", text: $travelpayouts)
                     .textInputAutocapitalization(.never)
@@ -128,6 +168,8 @@ struct SettingsForm: View {
             travelpayouts = model.travelpayoutsToken
             serpapi = model.serpApiKey
             sncf = model.sncfKey
+            feedURL = model.feedURL
+            feedAuto = model.feedAutoUpdate
             saved = false
         }
         .task { await model.refreshAccount() }

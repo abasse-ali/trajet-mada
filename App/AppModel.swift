@@ -51,6 +51,15 @@ final class AppModel {
     var schedules: [String: TrainSchedule] = [:]
     var scheduleErrors: [String: String] = [:]
     private var schedulesLoading: Set<String> = []
+    /// Données publiées chaque jour par le serveur Oracle (prix et horaires).
+    var feedURL: String = UserDefaults.standard.string(forKey: "feedURL") ?? AppModel.defaultFeedURL
+    var feedAutoUpdate: Bool = UserDefaults.standard.object(forKey: "feedAutoUpdate") as? Bool ?? true
+    var feedSchedules = FeedSchedules()
+    var feedStatus: String?
+    var feedDate: Date?
+    var isSyncingFeed = false
+
+    static let defaultFeedURL = "https://raw.githubusercontent.com/abasse-ali/trajet-mada/data/trajetmada-data.json"
     var verifying: Set<String> = []
     var sort: SortKey = .price
     var onlyRealFlights = false
@@ -71,8 +80,13 @@ final class AppModel {
             + "Clé Travelpayouts : \(travelpayoutsToken.isEmpty ? "absente" : "présente"). "
             + "Clé SerpApi : \(serpApiKey.isEmpty ? "absente" : "présente"). "
             + "Clé SNCF : \(sncfKey.isEmpty ? "absente" : "présente").")
+        if let saved = Persist.loadData("feed.json"), let feed = try? FeedReader.decode(saved) {
+            feedSchedules = FeedReader.schedules(feed)
+            feedDate = FeedReader.generatedDate(feed)
+        }
         Task {
             await self.recompute(reason: "ouverture de l'app")
+            if self.feedAutoUpdate { await self.syncFeed() }
             if LaunchOptions.autoSearch { await self.search() }
         }
     }
@@ -128,8 +142,15 @@ final class AppModel {
     /// Horaires réels SNCF d'une étape en train (jour exact si publié, sinon horaires types).
     func loadSchedule(for step: PricedStep) async {
         let key = Self.scheduleKey(step)
-        guard hasSNCF, schedules[key] == nil, !schedulesLoading.contains(key),
-              let from = NetworkData.place(step.from).sncfID,
+        guard schedules[key] == nil, !schedulesLoading.contains(key) else { return }
+        // Sans clé SNCF sur l'iPhone : horaires publiés par le serveur.
+        guard hasSNCF else {
+            if let fromFeed = feedSchedules.schedule(from: step.from, to: step.to, day: step.day) {
+                schedules[key] = fromFeed
+            }
+            return
+        }
+        guard let from = NetworkData.place(step.from).sncfID,
               let to = NetworkData.place(step.to).sncfID else { return }
         schedulesLoading.insert(key)
         defer { schedulesLoading.remove(key) }
@@ -150,8 +171,51 @@ final class AppModel {
                         ? "Jour exact : \(Fmt.dayLong(step.day))"
                         : "Horaires de \(Fmt.dayShort(step.day)) pas encore publiés : horaires types du \(Fmt.dayLong(reference.day))")
         } catch {
-            scheduleErrors[key] = error.localizedDescription
-            log.error(.api, "Horaires SNCF : \(error.localizedDescription)")
+            if let fromFeed = feedSchedules.schedule(from: step.from, to: step.to, day: step.day) {
+                schedules[key] = fromFeed
+                log.warning(.api, "Horaires SNCF en direct indisponibles, horaires du serveur utilisés : \(error.localizedDescription)")
+            } else {
+                scheduleErrors[key] = error.localizedDescription
+                log.error(.api, "Horaires SNCF : \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Données du serveur Oracle
+
+    func saveFeedSettings(url: String, autoUpdate: Bool) {
+        feedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        feedAutoUpdate = autoUpdate
+        UserDefaults.standard.set(feedURL, forKey: "feedURL")
+        UserDefaults.standard.set(autoUpdate, forKey: "feedAutoUpdate")
+    }
+
+    /// Télécharge les prix et horaires publiés par le serveur, les ajoute au carnet de prix et recalcule.
+    func syncFeed(recomputeAfter: Bool = true) async {
+        guard !isSyncingFeed, let url = URL(string: feedURL), !feedURL.isEmpty else { return }
+        isSyncingFeed = true
+        defer { isSyncingFeed = false }
+        do {
+            let data = try await HTTPClient(log: log).get(url, label: "Données du serveur", timeout: 60, quiet: true)
+            let feed = try FeedReader.decode(data)
+            let merged = FeedReader.merge(feed, into: book)
+            book = merged.book
+            feedSchedules = FeedReader.schedules(feed)
+            feedDate = FeedReader.generatedDate(feed)
+            Persist.saveData(data, "feed.json")
+            Persist.save(book, "prices.json")
+            if !hasSNCF { schedules = [:] }
+            let stats = feed.stats ?? [:]
+            feedStatus = "\(merged.added) prix et \(feed.schedules?.count ?? 0) horaires"
+            log.info(.api, "Données du serveur \(feedDate.map { Fmt.age($0) } ?? "") : \(merged.added) prix, \(feed.schedules?.count ?? 0) horaires",
+                     details: stats.sorted { $0.key < $1.key }.map { "\($0.key) : \($0.value)" }.joined(separator: "\n"))
+            if recomputeAfter { await recompute(reason: "données du serveur") }
+        } catch HTTPError.status(404, _) {
+            feedStatus = "Aucune donnée publiée pour l'instant (serveur pas encore installé ?)"
+            log.info(.api, "Données du serveur : pas encore publiées")
+        } catch {
+            feedStatus = "Indisponibles : \(error.localizedDescription)"
+            log.warning(.api, "Données du serveur indisponibles : \(error.localizedDescription)")
         }
     }
 
@@ -188,6 +252,11 @@ final class AppModel {
         Persist.save(params, "params.json")
         log.info(.app, "Recherche lancée", details: params.summary)
 
+        if feedAutoUpdate {
+            progressText = "Données du serveur…"
+            await syncFeed(recomputeAfter: false)
+        }
+
         if hasTravelpayouts {
             let network = FilteredNetwork(params: params)
             let tasks = TravelpayoutsScanner.plan(params: params, network: network)
@@ -206,9 +275,11 @@ final class AppModel {
             if stats.requests > 0 && stats.failures == stats.requests {
                 message = "Aucune réponse de Travelpayouts. Vérifiez le jeton dans Réglages (détails dans le Journal)."
             }
+        } else if !book.oneWay.isEmpty || !book.roundTrip.isEmpty {
+            log.info(.scan, "Pas de jeton Travelpayouts sur l'iPhone : prix des vols du serveur utilisés")
         } else {
             log.warning(.scan, "Pas de jeton Travelpayouts : prix des vols estimés")
-            message = "Sans jeton Travelpayouts, les prix des vols sont estimés. Ajoutez-le dans Réglages."
+            message = "Prix des vols estimés : ajoutez un jeton Travelpayouts dans Réglages, ou installez le serveur de mise à jour."
         }
 
         progress = 0.78
