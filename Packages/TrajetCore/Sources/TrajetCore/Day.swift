@@ -49,6 +49,17 @@ public struct Day: Hashable, Comparable, Sendable, Codable {
         self.init(year: y, month: m, day: d)
     }
 
+    /// Lit une date compacte « 20261118 » (format Navitia / API SNCF).
+    public init?(compact: String) {
+        let s = Array(compact.prefix(8))
+        guard s.count == 8, let y = Int(String(s[0..<4])), let m = Int(String(s[4..<6])), let d = Int(String(s[6..<8])),
+              (1...12).contains(m), (1...31).contains(d) else { return nil }
+        self.init(year: y, month: m, day: d)
+    }
+
+    /// AAAAMMJJ (API SNCF)
+    public var compact: String { String(format: "%04d%02d%02d", year, month, day) }
+
     public func adding(days: Int) -> Day {
         Day(utcDate: Day.utc.date(byAdding: .day, value: days, to: utcNoon)!)
     }

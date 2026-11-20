@@ -14,8 +14,9 @@ du moins cher au plus cher.
   - vols : scan de toutes les dates avec Travelpayouts (Aviasales), puis vérification en temps
     réel sur Google Flights via SerpApi ; billets aller-retour utilisés quand ils sont moins chers ;
   - FlixBus : prix, horaires et places en temps réel ;
-  - trains SNCF/OUIGO, BlaBlaCar, taxi-brousse, vedette : pas d'API publique, estimation clairement
-    signalée.
+  - trains SNCF (TGV INOUI, OUIGO, Intercités de nuit) : grille officielle des prix de l'open data
+    SNCF (minimum et maximum) et vrais horaires via l'API SNCF (clé gratuite) ;
+  - BlaBlaCar, taxi-brousse, vedette : pas d'API publique, estimation clairement signalée.
 - Chaque étape affiche la source et la fiabilité de son prix, et des **liens préremplis** (Google
   Flights, Skyscanner, Kayak, Aviasales, FlixBus, BlaBlaCar ; Kayak multi-destinations pour tout
   le voyage).
@@ -45,6 +46,8 @@ elle reste valable un an.
 | [Travelpayouts](https://www.travelpayouts.com/) | scan des prix des vols sur toute la période | gratuit |
 | [SerpApi](https://serpapi.com/users/sign_up) | vérification Google Flights en temps réel | 250 recherches/mois gratuites |
 | FlixBus | prix des bus en temps réel | sans clé |
+| [API SNCF](https://numerique.sncf.com/startup/api/) | vrais horaires des trains (publiés environ 1 mois à l'avance) | gratuit |
+| Open data SNCF | grille officielle des prix TGV, OUIGO, Intercités | sans clé |
 
 ## Développement
 

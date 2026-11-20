@@ -124,6 +124,7 @@ extension PriceQuality {
         case .live: return .green
         case .cached: return .teal
         case .tariff: return .gray
+        case .grid: return .indigo
         case .estimate: return .orange
         }
     }
@@ -133,6 +134,7 @@ extension PriceQuality {
         case .live: return "ui.bolt"
         case .cached: return "ui.check"
         case .tariff: return "ui.ticket"
+        case .grid: return "ui.ticket"
         case .estimate: return "ui.info"
         }
     }

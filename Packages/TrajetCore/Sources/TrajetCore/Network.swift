@@ -12,15 +12,18 @@ public enum NetworkData {
     public static let places: [PlaceID: Place] = {
         let list: [Place] = [
             Place(id: .toulouse, name: "Toulouse (centre, gare Matabiau)", short: "Toulouse", tier: 0,
-                  airport: nil, flixbusCityID: "40dfd612-8646-11e6-9066-549f350fcb0c", cityName: "Toulouse"),
+                  airport: nil, flixbusCityID: "40dfd612-8646-11e6-9066-549f350fcb0c", cityName: "Toulouse",
+                  sncfID: "stop_area:SNCF:87611004"),
             Place(id: .toulouseAirport, name: "Aéroport Toulouse-Blagnac", short: "Toulouse-Blagnac", tier: 1,
                   airport: AirportCode(code: "TLS", serpapi: "TLS", skyscanner: "tls"), flixbusCityID: nil, cityName: "Toulouse"),
             Place(id: .parisStations, name: "Paris (gares Montparnasse, Austerlitz, Bercy)", short: "Paris", tier: 1,
-                  airport: nil, flixbusCityID: "40de8964-8646-11e6-9066-549f350fcb0c", cityName: "Paris"),
+                  airport: nil, flixbusCityID: "40de8964-8646-11e6-9066-549f350fcb0c", cityName: "Paris",
+                  sncfID: "admin:fr:75056"),
             Place(id: .parisAirports, name: "Aéroports de Paris (CDG, Orly)", short: "Paris CDG/Orly", tier: 2,
                   airport: AirportCode(code: "PAR", serpapi: "CDG,ORY", skyscanner: "pari"), flixbusCityID: nil, cityName: "Paris"),
             Place(id: .milan, name: "Milan (Malpensa)", short: "Milan", tier: 3,
-                  airport: AirportCode(code: "MIL", serpapi: "MXP,LIN,BGY", skyscanner: "mila"), flixbusCityID: nil, cityName: "Milan"),
+                  airport: AirportCode(code: "MIL", serpapi: "MXP,LIN,BGY", skyscanner: "mila"), flixbusCityID: nil, cityName: "Milan",
+                  sncfID: "stop_area:SNCF:83016451"),
             Place(id: .reunion, name: "La Réunion (Saint-Denis Roland-Garros)", short: "La Réunion", tier: 4,
                   airport: AirportCode(code: "RUN", serpapi: "RUN", skyscanner: "run"), flixbusCityID: nil, cityName: "Saint-Denis"),
             Place(id: .mayotte, name: "Mayotte (Dzaoudzi-Pamandzi)", short: "Mayotte", tier: 4,
@@ -42,6 +45,14 @@ public enum NetworkData {
     public static func place(_ id: PlaceID) -> Place { places[id]! }
 
     public static let destinations: [PlaceID] = [.diego, .nosyBe]
+
+    /// Grille officielle SNCF Toulouse ⇄ Paris (open data, mise à jour de mars 2026), 2nde classe,
+    /// tarif normal. Remplacée par la version en ligne à chaque recherche.
+    public static let defaultTrainGrid: [String: FareRange] = [
+        "ouigo": FareRange(min: 19, max: 119, source: "open data SNCF, mars 2026"),
+        "tgv": FareRange(min: 25.5, max: 143, source: "open data SNCF, mars 2026"),
+        "intercites-nuit": FareRange(min: 29, max: 142, source: "open data SNCF, mars 2026"),
+    ]
 
     // MARK: - Fabriques
 
@@ -74,16 +85,16 @@ public enum NetworkData {
                             kind: .flixbus, links: [.flixbus]),
             TransportOption(id: "ouigo", mode: .train, operatorName: "OUIGO (TGV low-cost)", durationMin: 285,
                             priceMin: 19, priceTypical: 45, frequency: "1 à 3 par jour",
-                            notes: "Pas d'API publique SNCF : prix estimé. Bagages en option.",
-                            kind: .estimate, links: [.ouigo, .trainline]),
-            TransportOption(id: "tgv", mode: .train, operatorName: "SNCF TGV INOUI", durationMin: 260,
+                            notes: "Prix d'après la grille officielle SNCF (open data). Bagages en option.",
+                            kind: .estimate, links: [.ouigo, .trainline], sncfMode: "OUIGO"),
+            TransportOption(id: "tgv", mode: .train, operatorName: "SNCF TGV INOUI", durationMin: 290,
                             priceMin: 29, priceTypical: 75, frequency: "6 à 8 par jour",
-                            notes: "Pas d'API publique SNCF : prix estimé. Ventes ouvertes environ 4 mois avant.",
-                            kind: .estimate, links: [.sncfConnect, .trainline]),
+                            notes: "Prix d'après la grille officielle SNCF (open data). Ventes ouvertes environ 4 mois avant.",
+                            kind: .estimate, links: [.sncfConnect, .trainline], sncfMode: "TGV INOUI"),
             TransportOption(id: "intercites-nuit", mode: .train, operatorName: "Intercités de nuit (couchette)",
-                            durationMin: 480, priceMin: 29, priceTypical: 69, frequency: "1 par nuit selon calendrier",
-                            notes: "Arrivée à Paris-Austerlitz le matin.",
-                            kind: .estimate, links: [.sncfConnect, .trainline]),
+                            durationMin: 690, priceMin: 29, priceTypical: 57, frequency: "1 par nuit selon calendrier",
+                            notes: "Départ de Toulouse vers 19 h 45, arrivée à Paris-Austerlitz vers 7 h 15 (horaires SNCF de décembre 2026).",
+                            kind: .estimate, links: [.sncfConnect, .trainline], sncfMode: "Intercités de nuit"),
             TransportOption(id: "blablacar", mode: .covoiturage, operatorName: "BlaBlaCar (covoiturage)",
                             durationMin: 420, priceMin: 40, priceTypical: 55, frequency: "Nombreux trajets",
                             notes: "API réservée aux partenaires : prix estimé, lien prérempli.",
@@ -97,10 +108,9 @@ public enum NetworkData {
         ]),
         Connection(id: "PAR_G-MIL", a: .parisStations, b: .milan, options: [
             TransportOption(id: "train-milan", mode: .train, operatorName: "TGV / Frecciarossa Paris-Milan",
-                            durationMin: 500, priceMin: 40, priceTypical: 120, frequency: "2 à 5 par jour",
-                            verified: false,
-                            notes: "Ligne de la Maurienne coupée en 2023 : vérifier la circulation des trains directs.",
-                            kind: .estimate, links: [.sncfConnect, .trainline]),
+                            durationMin: 500, priceMin: 40, priceTypical: 120, frequency: "3 par jour",
+                            notes: "TGV INOUI direct Paris-Gare de Lyon - Milano Porta Garibaldi en 7 h (trains 9243, 9253, 9255 confirmés par l'API SNCF), puis Malpensa Express vers l'aéroport.",
+                            kind: .estimate, links: [.sncfConnect, .trainline], sncfMode: "TGV INOUI"),
         ]),
 
         // Vols au départ de Toulouse (toutes compagnies, correspondances comprises)

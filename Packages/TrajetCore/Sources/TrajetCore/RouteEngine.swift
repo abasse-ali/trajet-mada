@@ -2,15 +2,18 @@ import Foundation
 
 public enum PriceQuality: Int, Sendable, Comparable, Codable {
     case estimate = 0
-    case tariff = 1
-    case cached = 2
-    case live = 3
+    /// Grille officielle (fourchette de prix publiée par le transporteur).
+    case grid = 1
+    case tariff = 2
+    case cached = 3
+    case live = 4
 
     public static func < (lhs: PriceQuality, rhs: PriceQuality) -> Bool { lhs.rawValue < rhs.rawValue }
 
     public var label: String {
         switch self {
         case .estimate: return "estimation"
+        case .grid: return "grille SNCF"
         case .tariff: return "tarif connu"
         case .cached: return "prix réel"
         case .live: return "temps réel"
@@ -199,6 +202,10 @@ public struct RouteEngine: Sendable {
             }
             return PricedOption(option: option, price: option.priceTypical * mult, quality: .estimate, quote: nil)
         case .estimate:
+            if let grid = book.trainGrid[option.id] ?? NetworkData.defaultTrainGrid[option.id] {
+                let quote = Quote(price: grid.likely, source: .sncf, detail: grid.summary, fetchedAt: Date(timeIntervalSince1970: 0))
+                return PricedOption(option: option, price: grid.likely * mult, quality: .grid, quote: quote)
+            }
             return PricedOption(option: option, price: option.priceTypical * mult, quality: .estimate, quote: nil)
         case .tariff:
             return PricedOption(option: option, price: option.priceMin * mult, quality: .tariff, quote: nil)

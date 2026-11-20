@@ -19,6 +19,7 @@ struct SettingsForm: View {
     @Environment(AppModel.self) private var model
     @State private var travelpayouts = ""
     @State private var serpapi = ""
+    @State private var sncf = ""
     @State private var saved = false
     @State private var confirmClear = false
 
@@ -51,8 +52,21 @@ struct SettingsForm: View {
             }
 
             Section {
+                SecureField("Clé API SNCF", text: $sncf)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Link(destination: URL(string: "https://numerique.sncf.com/startup/api/")!) {
+                    linkLabel("Demander une clé API SNCF gratuite")
+                }
+            } header: {
+                Text("3. Horaires des trains (SNCF)")
+            } footer: {
+                Text("Affiche les vrais horaires des trains Toulouse-Paris et Paris-Milan pour chaque étape. L'API SNCF ne donne pas les prix : ceux-ci viennent de la grille officielle SNCF (open data, sans clé). Les horaires sont publiés environ un mois à l'avance ; avant, l'app montre les horaires types du même jour de la semaine.")
+            }
+
+            Section {
                 Button {
-                    model.saveKeys(travelpayouts: travelpayouts, serpapi: serpapi)
+                    model.saveKeys(travelpayouts: travelpayouts, serpapi: serpapi, sncf: sncf)
                     saved = true
                     Task { await model.refreshAccount() }
                 } label: {
@@ -100,7 +114,7 @@ struct SettingsForm: View {
             }
 
             Section {
-                Text("Trains SNCF et OUIGO : pas d'API publique de prix (accès réservé aux revendeurs sous contrat). L'app affiche une estimation, un lien vers le site et la date à saisir.")
+                Text("Trains SNCF, OUIGO et Intercités de nuit : pas d'API publique de prix au jour près (réservée aux revendeurs sous contrat). L'app utilise la grille officielle SNCF (prix minimum et maximum, open data) et retient le premier quart de la fourchette, soit le prix d'un billet pris tôt. Les horaires viennent de l'API SNCF.")
                 Text("BlaBlaCar : API réservée aux partenaires. Lien prérempli avec la ville et la date.")
                 Text("Taxi-brousse, Cotisse, vedettes d'Ankify : pas de vente en ligne, réservation sur place ou par téléphone. Prix estimés d'après des relevés (1 € = environ 5 000 à 5 300 Ar).")
                 Text("Estimations relevées en \(NetworkData.dataDate). Les vols sont recherchés « toutes compagnies » : Air France, Corsair, Ethiopian, Air Austral, French Bee, Ewa Air, Neos, Airlink, Madagascar Airlines…")
@@ -113,6 +127,7 @@ struct SettingsForm: View {
         .onAppear {
             travelpayouts = model.travelpayoutsToken
             serpapi = model.serpApiKey
+            sncf = model.sncfKey
             saved = false
         }
         .task { await model.refreshAccount() }

@@ -273,6 +273,69 @@ final class ParsingTests: XCTestCase {
         XCTAssertEqual(offer?.seats, 49)
     }
 
+    func testSNCFJourneys() throws {
+        // Réponse réelle de api.sncf.com (Toulouse Matabiau - Paris, 1er décembre 2026), réduite.
+        let json = """
+        {"journeys":[{"departure_date_time":"20261201T061000","arrival_date_time":"20261201T110300","duration":17580,"nb_transfers":0,"fare":{"found":false,"total":{"value":"0.0"},"links":[]},"sections":[{"type":"crow_fly"},{"type":"public_transport","display_informations":{"commercial_mode":"TGV INOUI","headsign":"8502"}},{"type":"crow_fly"}]},{"departure_date_time":"20261201T092400","arrival_date_time":"20261201T142200","duration":17880,"nb_transfers":1,"fare":{"found":false,"total":{"value":"0.0"},"links":[]},"sections":[{"type":"crow_fly"},{"type":"public_transport","display_informations":{"commercial_mode":"Intercités","headsign":"4752"}},{"type":"waiting"},{"type":"public_transport","display_informations":{"commercial_mode":"TGV INOUI","headsign":"12264"}},{"type":"crow_fly"}]},{"departure_date_time":"20261201T194300","arrival_date_time":"20261202T071600","duration":41580,"nb_transfers":0,"fare":{"found":false,"total":{"value":"0.0"}},"sections":[{"type":"public_transport","display_informations":{"commercial_mode":"Intercités de nuit","headsign":"3750"}}]}]}
+        """
+        let journeys = try SNCFClient.parseJourneys(Data(json.utf8))
+        XCTAssertEqual(journeys.count, 3)
+        XCTAssertEqual(journeys[0].departure, "06:10")
+        XCTAssertEqual(journeys[0].arrival, "11:03")
+        XCTAssertEqual(journeys[0].trains, ["TGV INOUI 8502"])
+        XCTAssertEqual(journeys[0].durationMin, 293)
+        XCTAssertNil(journeys[0].fare)
+        XCTAssertEqual(journeys[1].trains, ["Intercités 4752", "TGV INOUI 12264"])
+        XCTAssertEqual(journeys[1].transfers, 1)
+        XCTAssertEqual(journeys[2].arrivalDayOffset, 1)
+        XCTAssertEqual(journeys[2].modes, ["Intercités de nuit"])
+    }
+
+    func testSNCFErrorsAndWindow() throws {
+        XCTAssertEqual(try SNCFClient.parseJourneys(Data(#"{"error":{"id":"no_solution","message":"no solution"}}"#.utf8)).count, 0)
+        XCTAssertThrowsError(try SNCFClient.parseJourneys(Data(#"{"error":{"id":"date_out_of_bounds","message":"date is not in data production period"}}"#.utf8)))
+        let window = try SNCFClient.parseWindow(Data(#"{"regions":[{"start_production_date":"20261118","end_production_date":"20261217","status":"running"}]}"#.utf8))
+        XCTAssertEqual(window, SNCFWindow(start: Day(year: 2026, month: 11, day: 18), end: Day(year: 2026, month: 12, day: 17)))
+        let today = Day(year: 2026, month: 11, day: 20)
+        // Jour publié : interrogé tel quel.
+        let inside = SNCFClient.referenceDay(for: Day(year: 2026, month: 12, day: 1), window: window, today: today)
+        XCTAssertTrue(inside.exact)
+        // Mai 2027 pas encore publié : même jour de la semaine dans la période publiée.
+        let may = Day(year: 2027, month: 5, day: 10)
+        let reference = SNCFClient.referenceDay(for: may, window: window, today: today)
+        XCTAssertFalse(reference.exact)
+        XCTAssertEqual(reference.day.weekday, may.weekday)
+        XCTAssertTrue(reference.day > today && reference.day <= window.end)
+    }
+
+    func testSNCFFareGrids() throws {
+        // Extrait réel de ressources.data.sncf.com (tarifs-tgv-inoui-ouigo et tarifs-intercites).
+        let tgv = """
+        {"total_count":4,"results":[
+        {"transporteur":"OUIGO","gare_origine":"TOULOUSE MATABIAU","gare_destination":"PARIS MONTPARNASSE 1 ET 2","classe":"2","profil_tarifaire":"Tarif Normal","prix_minimum":19,"prix_maximum":119},
+        {"transporteur":"TGV INOUI","gare_origine":"PARIS MONTPARNASSE 1 ET 2","gare_destination":"TOULOUSE MATABIAU","classe":"2","profil_tarifaire":"Tarif Normal","prix_minimum":25.5,"prix_maximum":143},
+        {"transporteur":"TGV INOUI","gare_origine":"PARIS GARE DE LYON","gare_destination":"TOULOUSE MATABIAU","classe":"2","profil_tarifaire":"Tarif Normal","prix_minimum":25.5,"prix_maximum":155}]}
+        """
+        let grids = try SNCFFareClient.parseTGV(Data(tgv.utf8))
+        XCTAssertEqual(grids["ouigo"], FareRange(min: 19, max: 119, source: grids["ouigo"]!.source))
+        XCTAssertEqual(grids["tgv"]?.max, 143, "la grille de Montparnasse est prioritaire")
+        XCTAssertEqual(grids["ouigo"]?.likely, 44)
+        let night = """
+        {"results":[{"transporteur":"Intercités de nuit à réservation obligatoire","origine":"PARIS AUSTERLITZ","destination":"TOULOUSE MATABIAU","classe":"2","type_place":"couchette","prix_min":29,"prix_max":142}]}
+        """
+        XCTAssertEqual(try SNCFFareClient.parseIntercites(Data(night.utf8))?.min, 29)
+    }
+
+    func testTrainGridUsedByEngine() {
+        let params = SearchParams.defaults(today: Day(year: 2026, month: 11, day: 20))
+        let engine = RouteEngine(params: params, book: PriceBook())
+        let ouigo = NetworkData.connections.first { $0.id == "TLS_V-PAR_G" }!.options.first { $0.id == "ouigo" }!
+        let priced = engine.priceOption(ouigo, from: .toulouse, to: .parisStations, day: Day(year: 2027, month: 5, day: 10))
+        XCTAssertEqual(priced.quality, .grid)
+        XCTAssertEqual(priced.price, 44)
+        XCTAssertTrue(priced.quote?.detail?.contains("19") ?? false)
+    }
+
     func testEuroFormat() {
         XCTAssertEqual(Fmt.euro(1234.4), "1\u{202F}234\u{202F}€")
         XCTAssertEqual(Fmt.duration(1530), "1 j 1 h")

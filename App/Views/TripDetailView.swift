@@ -245,6 +245,10 @@ struct StepRow: View {
                 Text(notes).font(.footnote)
             }
 
+            if !flexibleDate && step.options.contains(where: { $0.option.sncfMode != nil }) {
+                TrainScheduleView(step: step)
+            }
+
             if step.roundTripPaired {
                 Text("Prix compris dans le billet aller-retour (plus bas).")
                     .font(.footnote)
@@ -312,6 +316,96 @@ struct StepRow: View {
         }
         links += LinkBuilder.links(for: priced.option, from: step.from, to: step.to, day: step.day, adults: adults)
         return links
+    }
+}
+
+/// Horaires réels des trains SNCF pour une étape (API SNCF, clé personnelle).
+struct TrainScheduleView: View {
+    let step: PricedStep
+    @Environment(AppModel.self) private var model
+    @State private var expanded = false
+
+    var body: some View {
+        let key = AppModel.scheduleKey(step)
+        let preferred = step.chosen.option.sncfMode
+        Group {
+            if !model.hasSNCF {
+                HStack(spacing: 6) {
+                    Icon("mode.train", size: 13, color: .secondary)
+                    Text("Horaires des trains : ajoutez votre clé API SNCF dans Réglages.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if let schedule = model.schedules[key] {
+                DisclosureGroup(isExpanded: $expanded) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(schedule.exact
+                             ? "Horaires réels du \(Fmt.dayLong(schedule.day))."
+                             : "Les horaires du \(Fmt.dayLong(schedule.day)) ne sont pas encore publiés : horaires types relevés le \(Fmt.dayLong(schedule.referenceDay)) (même jour de la semaine).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if schedule.journeys.isEmpty {
+                            Text("Aucun train trouvé ce jour-là.")
+                                .font(.caption)
+                        }
+                        ForEach(schedule.journeys) { journey in
+                            JourneyRow(journey: journey, highlighted: preferred.map { journey.modes.contains($0) } ?? false)
+                        }
+                    }
+                    .padding(.top, 4)
+                } label: {
+                    HStack(spacing: 6) {
+                        Icon("mode.train", size: 14, color: .accentColor)
+                        Text("Horaires SNCF : \(schedule.journeys.count) train\(schedule.journeys.count > 1 ? "s" : "")\(schedule.exact ? "" : " (horaires types)")")
+                            .font(.footnote.weight(.semibold))
+                    }
+                }
+            } else if let error = model.scheduleErrors[key] {
+                HStack(alignment: .top, spacing: 6) {
+                    Icon("ui.alert", size: 13, color: .orange)
+                    Text("Horaires SNCF indisponibles : \(error)")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Chargement des horaires SNCF…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .task(id: key) { await model.loadSchedule(for: step) }
+    }
+}
+
+struct JourneyRow: View {
+    let journey: TrainJourney
+    let highlighted: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            HStack(spacing: 4) {
+                Text(journey.departure)
+                Icon("ui.arrow", size: 10, color: .secondary)
+                Text(journey.arrival + (journey.arrivalDayOffset > 0 ? " (+\(journey.arrivalDayOffset) j)" : ""))
+            }
+            .font(.footnote.monospacedDigit().weight(highlighted ? .semibold : .regular))
+            .frame(minWidth: 118, alignment: .leading)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(journey.trains.joined(separator: " + "))
+                    .font(.caption.weight(highlighted ? .semibold : .regular))
+                    .foregroundStyle(highlighted ? Color.accentColor : Color.primary)
+                Text("\(Fmt.duration(journey.durationMin)) · "
+                     + (journey.transfers == 0 ? "direct" : "\(journey.transfers) correspondance\(journey.transfers > 1 ? "s" : "")")
+                     + (journey.fare.map { " · \(Fmt.euro($0))" } ?? ""))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }
 

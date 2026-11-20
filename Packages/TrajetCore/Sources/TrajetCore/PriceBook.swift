@@ -4,15 +4,17 @@ public enum QuoteSource: String, Codable, Sendable {
     case travelpayouts
     case serpapi
     case flixbus
+    case sncf
 
-    /// Prix vérifié à l'instant (et non tiré d'un cache).
-    public var isLive: Bool { self != .travelpayouts }
+    /// Prix vérifié à l'instant (et non tiré d'un cache ou d'une grille).
+    public var isLive: Bool { self == .serpapi || self == .flixbus }
 
     public var label: String {
         switch self {
         case .travelpayouts: return "Aviasales (cache 2 à 7 jours)"
         case .serpapi: return "Google Flights (temps réel)"
         case .flixbus: return "FlixBus (temps réel)"
+        case .sncf: return "SNCF open data"
         }
     }
 }
@@ -45,9 +47,24 @@ public struct PriceBook: Codable, Sendable {
     /// Clé de second niveau : « AAAA-MM-JJ|AAAA-MM-JJ » (aller|retour).
     public var roundTrip: [String: [String: Quote]] = [:]
     public var bus: [String: [String: Quote]] = [:]
+    /// Grilles officielles SNCF par identifiant d'option (« tgv », « ouigo », « intercites-nuit »).
+    public var trainGrid: [String: FareRange] = [:]
     public var lastScan: Date?
 
     public init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case oneWay, roundTrip, bus, trainGrid, lastScan
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        oneWay = try c.decodeIfPresent([String: [String: Quote]].self, forKey: .oneWay) ?? [:]
+        roundTrip = try c.decodeIfPresent([String: [String: Quote]].self, forKey: .roundTrip) ?? [:]
+        bus = try c.decodeIfPresent([String: [String: Quote]].self, forKey: .bus) ?? [:]
+        trainGrid = try c.decodeIfPresent([String: FareRange].self, forKey: .trainGrid) ?? [:]
+        lastScan = try c.decodeIfPresent(Date.self, forKey: .lastScan)
+    }
 
     public static func key(_ from: PlaceID, _ to: PlaceID) -> String { "\(from.rawValue)>\(to.rawValue)" }
     public static func pairKey(_ out: Day, _ back: Day) -> String { "\(out.key)|\(back.key)" }

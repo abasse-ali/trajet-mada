@@ -45,7 +45,12 @@ final class AppModel {
     var progressText = ""
     var travelpayoutsToken: String
     var serpApiKey: String
+    var sncfKey: String
     var serpAccount: SerpApiClient.Account?
+    var sncfWindow: SNCFWindow?
+    var schedules: [String: TrainSchedule] = [:]
+    var scheduleErrors: [String: String] = [:]
+    private var schedulesLoading: Set<String> = []
     var verifying: Set<String> = []
     var sort: SortKey = .price
     var onlyRealFlights = false
@@ -59,11 +64,13 @@ final class AppModel {
         self.book = Persist.load(PriceBook.self, "prices.json") ?? PriceBook()
         self.travelpayoutsToken = Keychain.get("travelpayouts") ?? ""
         self.serpApiKey = Keychain.get("serpapi") ?? ""
+        self.sncfKey = Keychain.get("sncf") ?? ""
         let counts = book.counts
         log.info(.app, "Démarrage de TrajetMada", details:
             "Prix en mémoire : \(counts.oneWay) allers simples, \(counts.roundTrip) allers-retours, \(counts.bus) bus.\n"
             + "Clé Travelpayouts : \(travelpayoutsToken.isEmpty ? "absente" : "présente"). "
-            + "Clé SerpApi : \(serpApiKey.isEmpty ? "absente" : "présente").")
+            + "Clé SerpApi : \(serpApiKey.isEmpty ? "absente" : "présente"). "
+            + "Clé SNCF : \(sncfKey.isEmpty ? "absente" : "présente").")
         Task {
             await self.recompute(reason: "ouverture de l'app")
             if LaunchOptions.autoSearch { await self.search() }
@@ -72,6 +79,7 @@ final class AppModel {
 
     var hasTravelpayouts: Bool { !travelpayoutsToken.isEmpty }
     var hasSerpApi: Bool { !serpApiKey.isEmpty }
+    var hasSNCF: Bool { !sncfKey.isEmpty }
 
     var sortedResults: [RoundTrip] {
         var list = results
@@ -93,13 +101,67 @@ final class AppModel {
 
     // MARK: - Réglages
 
-    func saveKeys(travelpayouts: String, serpapi: String) {
+    func saveKeys(travelpayouts: String, serpapi: String, sncf: String) {
         travelpayoutsToken = travelpayouts.trimmingCharacters(in: .whitespacesAndNewlines)
         serpApiKey = serpapi.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newSNCF = sncf.trimmingCharacters(in: .whitespacesAndNewlines)
+        if newSNCF != sncfKey {
+            sncfKey = newSNCF
+            schedules = [:]
+            scheduleErrors = [:]
+            sncfWindow = nil
+        }
         Keychain.set(travelpayoutsToken, for: "travelpayouts")
         Keychain.set(serpApiKey, for: "serpapi")
+        Keychain.set(sncfKey, for: "sncf")
         log.info(.app, "Clés enregistrées", details:
-            "Travelpayouts : \(hasTravelpayouts ? "présente" : "absente"), SerpApi : \(hasSerpApi ? "présente" : "absente")")
+            "Travelpayouts : \(hasTravelpayouts ? "présente" : "absente"), SerpApi : \(hasSerpApi ? "présente" : "absente"), "
+            + "SNCF : \(hasSNCF ? "présente" : "absente")")
+    }
+
+    // MARK: - Trains SNCF
+
+    static func scheduleKey(_ step: PricedStep) -> String {
+        "\(step.from.rawValue)>\(step.to.rawValue)>\(step.day.key)"
+    }
+
+    /// Horaires réels SNCF d'une étape en train (jour exact si publié, sinon horaires types).
+    func loadSchedule(for step: PricedStep) async {
+        let key = Self.scheduleKey(step)
+        guard hasSNCF, schedules[key] == nil, !schedulesLoading.contains(key),
+              let from = NetworkData.place(step.from).sncfID,
+              let to = NetworkData.place(step.to).sncfID else { return }
+        schedulesLoading.insert(key)
+        defer { schedulesLoading.remove(key) }
+        let client = SNCFClient(key: sncfKey, http: HTTPClient(log: log))
+        do {
+            if sncfWindow == nil {
+                let window = try await client.window()
+                sncfWindow = window
+                log.info(.api, "Horaires SNCF publiés du \(Fmt.dayShort(window.start)) au \(Fmt.dayLong(window.end))")
+            }
+            guard let window = sncfWindow else { return }
+            let reference = SNCFClient.referenceDay(for: step.day, window: window, today: Day(localDate: Date()))
+            let label = "SNCF horaires \(NetworkData.place(step.from).short)-\(NetworkData.place(step.to).short) \(reference.day.key)"
+            let journeys = try await client.journeys(from: from, to: to, day: reference.day, label: label)
+            schedules[key] = TrainSchedule(day: step.day, referenceDay: reference.day, exact: reference.exact, journeys: journeys)
+            log.info(.api, "Horaires SNCF \(NetworkData.place(step.from).short)-\(NetworkData.place(step.to).short) : \(journeys.count) trains",
+                     details: reference.exact
+                        ? "Jour exact : \(Fmt.dayLong(step.day))"
+                        : "Horaires de \(Fmt.dayShort(step.day)) pas encore publiés : horaires types du \(Fmt.dayLong(reference.day))")
+        } catch {
+            scheduleErrors[key] = error.localizedDescription
+            log.error(.api, "Horaires SNCF : \(error.localizedDescription)")
+        }
+    }
+
+    /// Grille officielle des prix SNCF (open data, sans clé).
+    func refreshTrainGrid() async {
+        let grid = await SNCFFareClient(http: HTTPClient(log: log)).fetchToulouseParis()
+        guard !grid.isEmpty else { return }
+        book.trainGrid = grid
+        let lines = grid.sorted { $0.key < $1.key }.map { "\($0.key) : \(Fmt.euro($0.value.min)) à \(Fmt.euro($0.value.max))" }
+        log.info(.api, "Grille officielle SNCF mise à jour (\(grid.count) tarifs)", details: lines.joined(separator: "\n"))
     }
 
     func clearPrices() {
@@ -149,6 +211,9 @@ final class AppModel {
             message = "Sans jeton Travelpayouts, les prix des vols sont estimés. Ajoutez-le dans Réglages."
         }
 
+        progress = 0.78
+        progressText = "Grille des prix SNCF…"
+        await refreshTrainGrid()
         progress = 0.8
         progressText = "Calcul de toutes les combinaisons…"
         await recompute(reason: "après le scan")

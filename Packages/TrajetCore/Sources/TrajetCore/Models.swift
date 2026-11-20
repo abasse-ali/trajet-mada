@@ -66,6 +66,8 @@ public struct Place: Sendable, Identifiable {
     public let flixbusCityID: String?
     /// Nom de ville pour BlaBlaCar.
     public let cityName: String
+    /// Identifiant de gare ou de ville pour l'API SNCF (horaires).
+    public var sncfID: String? = nil
 }
 
 public enum PriceKind: String, Sendable, Codable {
@@ -106,6 +108,8 @@ public struct TransportOption: Sendable, Identifiable {
     public var notes: String? = nil
     public let kind: PriceKind
     public let links: [LinkKind]
+    /// Mode commercial SNCF (« TGV INOUI », « OUIGO », « Intercités de nuit ») pour les horaires réels.
+    public var sncfMode: String? = nil
 }
 
 /// Liaison dans les deux sens entre deux lieux, avec une ou plusieurs options.
