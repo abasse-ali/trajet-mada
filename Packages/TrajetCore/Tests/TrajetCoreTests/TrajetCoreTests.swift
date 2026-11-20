@@ -209,7 +209,9 @@ final class FeedTests: XCTestCase {
     }
 
     func testOldLiveQuoteIsNoLongerLive() throws {
-        let feed = try FeedReader.decode(Data(Self.json.utf8))
+        // Relevé daté de janvier 2026 : toujours plus de 3 heures, quel que soit le moment du test.
+        let old = Self.json.replacingOccurrences(of: "2026-11-20T23:38:00Z", with: "2026-01-01T00:00:00Z")
+        let feed = try FeedReader.decode(Data(old.utf8))
         let book = FeedReader.merge(feed, into: PriceBook()).book
         let params = SearchParams.defaults(today: Day(year: 2026, month: 11, day: 20))
         let engine = RouteEngine(params: params, book: book)
