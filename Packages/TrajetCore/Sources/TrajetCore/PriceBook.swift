@@ -1,0 +1,99 @@
+import Foundation
+
+public enum QuoteSource: String, Codable, Sendable {
+    case travelpayouts
+    case serpapi
+    case flixbus
+
+    /// Prix vérifié à l'instant (et non tiré d'un cache).
+    public var isLive: Bool { self != .travelpayouts }
+
+    public var label: String {
+        switch self {
+        case .travelpayouts: return "Aviasales (cache 2 à 7 jours)"
+        case .serpapi: return "Google Flights (temps réel)"
+        case .flixbus: return "FlixBus (temps réel)"
+        }
+    }
+}
+
+public struct Quote: Codable, Sendable {
+    /// Prix par personne (€).
+    public let price: Double
+    public let source: QuoteSource
+    public let carrier: String?
+    public let transfers: Int?
+    public let detail: String?
+    public let link: URL?
+    public let fetchedAt: Date
+
+    public init(price: Double, source: QuoteSource, carrier: String? = nil, transfers: Int? = nil,
+                detail: String? = nil, link: URL? = nil, fetchedAt: Date = Date()) {
+        self.price = price
+        self.source = source
+        self.carrier = carrier
+        self.transfers = transfers
+        self.detail = detail
+        self.link = link
+        self.fetchedAt = fetchedAt
+    }
+}
+
+/// Tous les prix récupérés, par trajet orienté (« PAR>TNR ») puis par jour ou paire de jours.
+public struct PriceBook: Codable, Sendable {
+    public var oneWay: [String: [String: Quote]] = [:]
+    /// Clé de second niveau : « AAAA-MM-JJ|AAAA-MM-JJ » (aller|retour).
+    public var roundTrip: [String: [String: Quote]] = [:]
+    public var bus: [String: [String: Quote]] = [:]
+    public var lastScan: Date?
+
+    public init() {}
+
+    public static func key(_ from: PlaceID, _ to: PlaceID) -> String { "\(from.rawValue)>\(to.rawValue)" }
+    public static func pairKey(_ out: Day, _ back: Day) -> String { "\(out.key)|\(back.key)" }
+
+    public var isEmpty: Bool { oneWay.isEmpty && roundTrip.isEmpty && bus.isEmpty }
+
+    public var counts: (oneWay: Int, roundTrip: Int, bus: Int) {
+        (oneWay.values.reduce(0) { $0 + $1.count },
+         roundTrip.values.reduce(0) { $0 + $1.count },
+         bus.values.reduce(0) { $0 + $1.count })
+    }
+
+    /// Garde le meilleur prix ; un prix vérifié en direct remplace toujours un prix en cache.
+    public mutating func put(_ quote: Quote, in store: WritableKeyPath<PriceBook, [String: [String: Quote]]>,
+                             key: String, sub: String) {
+        if let current = self[keyPath: store][key]?[sub] {
+            if !quote.source.isLive && (current.source.isLive || current.price <= quote.price) { return }
+        }
+        self[keyPath: store][key, default: [:]][sub] = quote
+    }
+
+    public mutating func putOneWay(_ quote: Quote, from: PlaceID, to: PlaceID, day: Day) {
+        put(quote, in: \.oneWay, key: Self.key(from, to), sub: day.key)
+    }
+
+    public mutating func putRoundTrip(_ quote: Quote, from: PlaceID, to: PlaceID, out: Day, back: Day) {
+        put(quote, in: \.roundTrip, key: Self.key(from, to), sub: Self.pairKey(out, back))
+    }
+
+    public mutating func putBus(_ quote: Quote, from: PlaceID, to: PlaceID, day: Day) {
+        put(quote, in: \.bus, key: Self.key(from, to), sub: day.key)
+    }
+
+    /// Prix médian observé par trajet et par mois (« PAR>TNR#2027-05 ») et par trajet.
+    /// Sert d'estimation réaliste les jours sans prix connu.
+    public func calibration() -> [String: Double] {
+        var buckets: [String: [Double]] = [:]
+        for (route, days) in oneWay {
+            for (day, quote) in days where quote.price > 0 {
+                buckets["\(route)#\(day.prefix(7))", default: []].append(quote.price)
+                buckets[route, default: []].append(quote.price)
+            }
+        }
+        return buckets.mapValues { values in
+            let sorted = values.sorted()
+            return sorted[sorted.count / 2]
+        }
+    }
+}
