@@ -1,0 +1,14 @@
+node_modules/
+.expo/
+dist/
+web-build/
+ios/
+android/
+build/
+Payload/
+*.ipa
+*.apk
+*.aab
+.DS_Store
+npm-debug.*
+*.log

@@ -1,0 +1,66 @@
+# Construit un fichier .ipa NON SIGNÉ sur un Mac GitHub, avec le SDK iOS 26 (Xcode 26).
+# Signez-le ensuite avec Sideloadly + votre identifiant Apple pour l'installer sur l'iPhone.
+# Lancement : onglet « Actions » du dépôt → « Build iOS IPA » → « Run workflow ».
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: macos-26
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Choisir la version d'Xcode la plus récente
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)
+          echo "Xcode choisi : $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Générer le projet iOS natif
+        run: npx expo prebuild --platform ios --clean
+
+      - name: Compiler (Release, sans signature)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace ios/TrajetMada.xcworkspace \
+            -scheme TrajetMada \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build | tee xcodebuild.log | grep -E "error:|warning: .*deprecated|BUILD (SUCCEEDED|FAILED)" || true
+          test -d build/Build/Products/Release-iphoneos/TrajetMada.app
+
+      - name: Empaqueter en .ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/TrajetMada.app Payload/
+          zip -qry TrajetMada.ipa Payload
+          ls -lh TrajetMada.ipa
+          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" Payload/TrajetMada.app/Info.plist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TrajetMada-ipa
+          path: TrajetMada.ipa
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
