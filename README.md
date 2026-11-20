@@ -1,84 +1,59 @@
-# TrajetMada : Toulouse → Antsiranana / Nosy Be
+# TrajetMada : Toulouse ⇄ Antsiranana / Nosy Be
 
-App iPhone (et Android / web) qui calcule **tous les trajets possibles** de Toulouse vers
-Antsiranana (Diego-Suarez) ou Nosy Be, tous modes confondus (train, bus, covoiturage, avion,
-bateau, taxi-brousse, taxi privé), et les classe du moins cher au plus cher.
+App iPhone native (Swift / SwiftUI, iOS 17 à 27) qui cherche **tous les allers-retours possibles**
+de Toulouse vers Antsiranana (Diego-Suarez) et Nosy Be, tous modes confondus, et les classe
+du moins cher au plus cher.
 
-- 48 liaisons, 727 combinaisons vers Diego et 355 vers Nosy Be.
-- Tri par prix bas, prix courant, durée ou simplicité (nombre de billets).
-- Signale les correspondances non protégées (billets séparés), les vols hebdomadaires
-  et les liaisons à vérifier.
-- Pour chaque étape : liens de réservation (site du transporteur, Google Flights, Skyscanner,
-  Kayak, SNCF Connect, BlaBlaCar…) ouverts à la bonne date.
-- Prix des vols en direct (optionnel) avec un jeton gratuit Travelpayouts / Aviasales.
+- **Aller-retour** de mai à septembre, séjour de 28 à 30 jours (modifiable).
+- Arrivée et retour par des villes différentes possibles (ex. arrivée Nosy Be, retour Antsiranana),
+  trajet sur place compris dans le total.
+- 63 trajets possibles par sens (train, OUIGO, train de nuit, FlixBus, BlaBlaCar, avion via Paris,
+  Milan, La Réunion, Mayotte, Johannesburg, Tana, taxi-brousse, vedette, taxi privé) sur
+  369 paires de dates, soit environ 170 000 combinaisons évaluées en moins d'une seconde.
+- **Prix réels** :
+  - vols : scan de toutes les dates avec Travelpayouts (Aviasales), puis vérification en temps
+    réel sur Google Flights via SerpApi ; billets aller-retour utilisés quand ils sont moins chers ;
+  - FlixBus : prix, horaires et places en temps réel ;
+  - trains SNCF/OUIGO, BlaBlaCar, taxi-brousse, vedette : pas d'API publique, estimation clairement
+    signalée.
+- Chaque étape affiche la source et la fiabilité de son prix, et des **liens préremplis** (Google
+  Flights, Skyscanner, Kayak, Aviasales, FlixBus, BlaBlaCar ; Kayak multi-destinations pour tout
+  le voyage).
+- **Journal** : chaque appel d'API (sans les clés), erreur et calcul, filtrable, à partager.
+- Icônes SVG, thème clair/sombre, Liquid Glass d'iOS 26 automatique.
 
-## Tester sur iPhone en 2 minutes (sans IPA)
+## Installer l'IPA sur l'iPhone (Windows, gratuit)
 
-1. Installez **Expo Go** depuis l'App Store sur l'iPhone.
-2. Sur le PC, dans ce dossier :
-   ```
-   npm install
-   npx expo start
-   ```
-   (Si l'iPhone n'est pas sur le même Wi-Fi : `npx expo start --tunnel`.)
-3. Scannez le QR code avec l'appareil photo de l'iPhone.
+1. Récupérez `TrajetMada.ipa` : onglet **Actions** du dépôt GitHub, dernier build réussi,
+   artefact `TrajetMada-ipa` (fichier zip contenant l'IPA).
+2. Installez [Sideloadly](https://sideloadly.io/) sur le PC, avec iTunes et iCloud téléchargés
+   depuis le site d'Apple (pas la version Microsoft Store).
+3. Branchez l'iPhone en USB, glissez l'IPA dans Sideloadly, entrez votre identifiant Apple,
+   cliquez **Start**.
+4. Sur l'iPhone : Réglages, Confidentialité et sécurité, **Mode développeur**, activer
+   (redémarrage). Puis Réglages, Général, VPN et gestion de l'appareil, votre identifiant,
+   **Faire confiance**.
 
-Aperçu dans le navigateur du PC : `npx expo start --web`.
+Avec un identifiant Apple gratuit, l'app doit être réinstallée tous les 7 jours (Sideloadly sait
+le faire automatiquement s'il reste ouvert sur le PC). Avec un compte Apple Developer (99 $/an),
+elle reste valable un an.
 
-## Obtenir un vrai fichier .ipa
+## Clés d'API (onglet Réglages de l'app)
 
-Apple n'autorise la compilation iOS que sur un Mac. Depuis Windows, deux solutions :
+| Service | Rôle | Coût |
+|---|---|---|
+| [Travelpayouts](https://www.travelpayouts.com/) | scan des prix des vols sur toute la période | gratuit |
+| [SerpApi](https://serpapi.com/users/sign_up) | vérification Google Flights en temps réel | 250 recherches/mois gratuites |
+| FlixBus | prix des bus en temps réel | sans clé |
 
-### Option A : gratuite (GitHub Actions + Sideloadly)
-1. Créez un dépôt sur GitHub et poussez ce dossier.
-2. Onglet **Actions** → **Build iOS IPA** → **Run workflow** (environ 15-25 min, Xcode 26 /
-   SDK iOS 26 sur un Mac `macos-26`).
-3. Téléchargez l'artefact `TrajetMada-ipa` (fichier `TrajetMada.ipa`, non signé).
-4. Installez [Sideloadly](https://sideloadly.io/) sur le PC (avec iTunes et iCloud version
-   site Apple, pas Microsoft Store), branchez l'iPhone en USB, glissez l'IPA et connectez-vous
-   avec votre identifiant Apple : Sideloadly signe et installe l'app.
-5. Sur l'iPhone (iOS 26/27) : Réglages → Confidentialité et sécurité → **Mode développeur**
-   → activer (l'iPhone redémarre), puis Réglages → Général → VPN et gestion de l'appareil →
-   votre identifiant Apple → **Faire confiance**.
+## Développement
 
-Avec un identifiant Apple gratuit, l'app expire au bout de 7 jours : il suffit de la réinstaller
-avec Sideloadly.
-
-Compatibilité : app iPhone uniquement (dont iPhone 15), iOS 26 et 27,
-thème clair/sombre automatique, Dynamic Island et zones sûres gérées. Toutes les icônes sont
-en SVG (aucun emoji).
-
-### Option B : EAS Build (compte Apple Developer, 99 $/an)
-```
-npm install -g eas-cli
-eas login
-eas build --platform ios --profile preview
-```
-EAS compile dans le cloud, signe l'IPA et donne un lien d'installation directe sur l'iPhone.
-
-## Prix des vols en direct
-
-1. Créez un compte gratuit sur https://www.travelpayouts.com puis copiez votre jeton
-   (Profil → API token).
-2. Dans l'app : bouton Réglages (en haut à droite) → collez le jeton → Enregistrer → **Actualiser**.
-
-Les prix viennent du cache Aviasales (recherches des 2 à 7 derniers jours) pour le mois choisi.
-Les trains, bus, bateaux et taxis-brousse n'ont pas d'API publique : leurs prix restent des estimations.
-
-## Mettre à jour les données
-
-Toutes les liaisons sont dans [src/data/network.ts](src/data/network.ts) : durée, prix bas et
-courant, fréquence, liens. Ajoutez un objet dans `LEGS` pour créer une nouvelle liaison ; le
-moteur ([src/engine/routes.ts](src/engine/routes.ts)) la combinera automatiquement.
-
-Vérifications du moteur : `npm run test:engine`. Types : `npm run typecheck`.
-
-## Limites
-
-- Prix estimés en novembre 2026 : ils bougent selon la date et la saison. Vérifiez toujours
-  avant d'acheter.
-- La durée affichée n'inclut pas l'attente d'un vol hebdomadaire (Corsair Orly–Tana, Neos
-  Milan–Nosy Be, Airlink, Ewa Air…).
-- Liaisons « à vérifier » : signalées par des sources récentes mais non confirmées pour la saison
-  en cours (Air Austral Réunion–Diego, Emirates via Dubaï, train Paris–Milan, vol Nosy Be–Diego,
-  billets uniques toutes compagnies).
+- `Packages/TrajetCore` : moteur et API (Swift Package), testé par `swift test`.
+  - `Network.swift` : toutes les liaisons et leurs estimations ;
+  - `RouteEngine.swift` : combinaisons aller-retour, dates, billets aller-retour ;
+  - `Travelpayouts.swift`, `SerpApi.swift`, `FlixBus.swift` : sources de prix ;
+  - `Links.swift` : liens préremplis.
+- `App/` : interface SwiftUI. `project.yml` : projet Xcode généré par XcodeGen.
+- `tools/make-icons.mjs` : génère les icônes SVG du catalogue d'assets.
+- `.github/workflows/ios-ipa.yml` : à chaque push, tests du moteur puis compilation de l'IPA
+  non signé sur un Mac GitHub (Xcode 26).

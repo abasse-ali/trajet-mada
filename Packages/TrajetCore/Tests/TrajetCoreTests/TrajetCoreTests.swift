@@ -140,12 +140,15 @@ final class EngineTests: XCTestCase {
         var book = PriceBook()
         let out = Day(year: 2027, month: 6, day: 2)
         let back = out.adding(days: 29)
-        book.putOneWay(Quote(price: 600, source: .travelpayouts), from: .parisAirports, to: .tana, day: out)
-        book.putOneWay(Quote(price: 600, source: .travelpayouts), from: .tana, to: .parisAirports, day: back)
-        book.putRoundTrip(Quote(price: 800, source: .travelpayouts), from: .parisAirports, to: .tana, out: out, back: back)
+        // Le vol Paris-Nosy Be part le jour même à l'aller (bus + RER) et le jour du retour depuis Nosy Be.
+        book.putOneWay(Quote(price: 600, source: .travelpayouts), from: .parisAirports, to: .nosyBe, day: out)
+        book.putOneWay(Quote(price: 600, source: .travelpayouts), from: .nosyBe, to: .parisAirports, day: back)
+        book.putRoundTrip(Quote(price: 800, source: .travelpayouts), from: .parisAirports, to: .nosyBe, out: out, back: back)
         let engine = RouteEngine(params: params, book: book)
-        let trip = engine.evaluate(outSignature: "TLS_V>PAR_G>PAR>TNR>DIE", inSignature: "DIE>TNR>PAR>PAR_G>TLS_V",
+        let trip = engine.evaluate(outSignature: "TLS_V>PAR_G>PAR>NOS", inSignature: "NOS>PAR>PAR_G>TLS_V",
                                    out: out, back: back)
+        XCTAssertEqual(trip?.outbound.first { $0.mode == .avion }?.day, out)
+        XCTAssertEqual(trip?.inbound.first { $0.mode == .avion }?.day, back)
         XCTAssertEqual(trip?.rtTickets.count, 1)
         XCTAssertEqual(trip?.rtTickets.first?.price, 800)
         XCTAssertTrue(trip?.outbound.contains { $0.roundTripPaired } ?? false)

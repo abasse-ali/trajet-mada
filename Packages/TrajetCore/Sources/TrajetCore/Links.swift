@@ -6,6 +6,12 @@ public struct BookingLink: Sendable, Identifiable, Hashable {
     public let url: URL
     /// Le site s'ouvre directement sur la recherche, dates et lieux remplis.
     public let prefilled: Bool
+
+    public init(label: String, url: URL, prefilled: Bool) {
+        self.label = label
+        self.url = url
+        self.prefilled = prefilled
+    }
 }
 
 /// Liens de réservation préremplis (lieux, dates, voyageurs) pour chaque transporteur.
