@@ -64,7 +64,10 @@ final class AppModel {
             "Prix en mémoire : \(counts.oneWay) allers simples, \(counts.roundTrip) allers-retours, \(counts.bus) bus.\n"
             + "Clé Travelpayouts : \(travelpayoutsToken.isEmpty ? "absente" : "présente"). "
             + "Clé SerpApi : \(serpApiKey.isEmpty ? "absente" : "présente").")
-        Task { await self.recompute(reason: "ouverture de l'app") }
+        Task {
+            await self.recompute(reason: "ouverture de l'app")
+            if LaunchOptions.autoSearch { await self.search() }
+        }
     }
 
     var hasTravelpayouts: Bool { !travelpayoutsToken.isEmpty }

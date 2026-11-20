@@ -3,10 +3,12 @@ import TrajetCore
 
 struct SearchView: View {
     @Environment(AppModel.self) private var model
+    @State private var path = NavigationPath()
 
     var body: some View {
         @Bindable var model = model
-        NavigationStack {
+        NavigationStack(path: $path) {
+            ScrollViewReader { proxy in
             List {
                 Section {
                     destinationToggle(.diego, title: "Antsiranana (Diego-Suarez)")
@@ -123,6 +125,7 @@ struct SearchView: View {
                             }
                         }
                         .pickerStyle(.segmented)
+                        .id("results")
                         Toggle("Seulement des vols à prix réel", isOn: $model.onlyRealFlights)
                     } header: {
                         Text("\(model.sortedResults.count) allers-retours")
@@ -146,6 +149,17 @@ struct SearchView: View {
                         }
                     }
                 }
+            }
+            .task(id: model.results.count) {
+                // Options de lancement utilisées pour les captures d'écran automatiques (CI).
+                guard !model.results.isEmpty else { return }
+                if LaunchOptions.openFirst, path.isEmpty, let first = model.sortedResults.first {
+                    path.append(first.id)
+                } else if LaunchOptions.scrollToResults {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    withAnimation { proxy.scrollTo("results", anchor: .top) }
+                }
+            }
             }
             .navigationTitle("Toulouse - Madagascar")
             .navigationDestination(for: String.self) { id in

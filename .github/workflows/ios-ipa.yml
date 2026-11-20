@@ -78,7 +78,51 @@ jobs:
           path: TrajetMada.ipa
 
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: always()
         with:
           name: xcodebuild-log
           path: xcodebuild.log
+
+  simulator:
+    needs: tests
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Choisir la version d'Xcode la plus récente
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Générer le projet Xcode (XcodeGen)
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Compiler pour le simulateur
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project TrajetMada.xcodeproj \
+            -scheme TrajetMada \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build-sim \
+            build 2>&1 | tee xcodebuild-sim.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
+          test -d build-sim/Build/Products/Debug-iphonesimulator/TrajetMada.app
+
+      - name: Lancer l'app et capturer les écrans
+        run: |
+          chmod +x tools/simulator-screenshots.sh
+          tools/simulator-screenshots.sh build-sim/Build/Products/Debug-iphonesimulator/TrajetMada.app screenshots
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: captures-simulateur
+          path: |
+            screenshots
+            xcodebuild-sim.log
