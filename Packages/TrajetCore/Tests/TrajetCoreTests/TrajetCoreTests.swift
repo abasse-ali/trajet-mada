@@ -295,34 +295,75 @@ final class CollectorTests: XCTestCase {
         XCTAssertEqual(plan[0].from, .parisAirports)
         for probe in plan.dropFirst() {
             XCTAssertNil(probe.aviasalesPrice)
-            XCTAssertTrue((28...30).contains(probe.out.days(until: probe.back)))
-            XCTAssertTrue(probe.back <= params.lastReturnDay)
+            guard let back = probe.back else { return XCTFail("les allers-retours passent avant les allers simples") }
+            XCTAssertTrue((28...30).contains(probe.out.days(until: back)))
+            XCTAssertTrue(back <= params.lastReturnDay)
         }
-        XCTAssertEqual(Set(plan.map { "\($0.from)\($0.to)" }).count, 4, "un sondage par axe")
+        XCTAssertEqual(Set(plan.map { "\($0.from)\($0.to)" }).count, 4, "un sondage par trajet")
+        XCTAssertFalse(plan.contains { $0.to == .diego && $0.from != .tana }, "pas de recherche France-Diego, jamais vendue")
         XCTAssertTrue(Collector.serpPlan(book: book, params: params, today: today, budget: 0).isEmpty)
+    }
+
+    func testSerpPlanIncludesDomesticOneWays() {
+        let plan = Collector.serpPlan(book: PriceBook(), params: params, today: today, budget: 20)
+        XCTAssertEqual(plan.count, Collector.serpRoundTrips.count + Collector.serpOneWays.count)
+        let domestic = plan.filter { $0.back == nil }
+        XCTAssertEqual(Set(domestic.map { PriceBook.key($0.from, $0.to) }), ["TNR>DIE", "DIE>TNR", "TNR>NOS", "NOS>TNR"])
+        for probe in domestic {
+            XCTAssertTrue(probe.out >= params.periodStart && probe.out <= params.lastReturnDay)
+        }
+    }
+
+    func testDeadRouteIsSetAside() {
+        let a = Collector.serpKey(.parisAirports, .nosyBe, Day(year: 2027, month: 6, day: 1), Day(year: 2027, month: 6, day: 30))
+        let b = Collector.serpKey(.parisAirports, .nosyBe, Day(year: 2027, month: 7, day: 1), Day(year: 2027, month: 7, day: 30))
+        let c = Collector.serpKey(.tana, .diego, Day(year: 2027, month: 6, day: 2), nil)
+        XCTAssertEqual(c, "TNR>DIE|2027-06-02")
+        XCTAssertEqual(Collector.deadRoutes(skip: [a, b, c]), ["PAR>NOS"])
+        let plan = Collector.serpPlan(book: PriceBook(), params: params, today: today, budget: 20, skip: [a, b])
+        XCTAssertFalse(plan.contains { $0.from == .parisAirports && $0.to == .nosyBe }, "deux échecs : trajet mis de côté")
+        XCTAssertTrue(plan.contains { $0.from == .tana && $0.to == .diego })
     }
 
     func testSerpPlanSkipsWhatTheServerAlreadyVerified() {
         var book = PriceBook()
-        let first = Collector.serpPlan(book: book, params: params, today: today, budget: 7)
-        XCTAssertEqual(first.count, 7)
-        // Le serveur a vérifié le premier sondage : l'app ne le refait pas et passe aux axes non couverts.
+        let all = Collector.serpRoundTrips.count + Collector.serpOneWays.count
+        let first = Collector.serpPlan(book: book, params: params, today: today, budget: 20)
+        XCTAssertEqual(first.count, all)
+        // Le serveur a vérifié le premier sondage : l'app ne le refait pas.
         let done = first[0]
-        book.putRoundTrip(Quote(price: 965, source: .serpapi), from: done.from, to: done.to, out: done.out, back: done.back)
-        let second = Collector.serpPlan(book: book, params: params, today: today, budget: 7)
+        book.putRoundTrip(Quote(price: 965, source: .serpapi), from: done.from, to: done.to, out: done.out, back: done.back!)
+        let second = Collector.serpPlan(book: book, params: params, today: today, budget: 20)
         XCTAssertFalse(second.contains(done))
-        XCTAssertEqual(second.count, 6)
+        XCTAssertEqual(second.count, all - 1)
         // Une recherche déjà tentée sans résultat n'est pas refaite.
         let empty = second[0]
-        let third = Collector.serpPlan(book: book, params: params, today: today, budget: 7,
+        let third = Collector.serpPlan(book: book, params: params, today: today, budget: 20,
                                        skip: [Collector.serpKey(empty.from, empty.to, empty.out, empty.back)])
         XCTAssertFalse(third.contains(empty))
-        XCTAssertEqual(third.count, 5)
+        XCTAssertEqual(third.count, all - 2)
         // Un jour plus tard, les dates sondées changent.
-        let tomorrow = Collector.serpPlan(book: PriceBook(), params: params, today: today.adding(days: 1), budget: 7)
+        let tomorrow = Collector.serpPlan(book: PriceBook(), params: params, today: today.adding(days: 1), budget: 20)
         XCTAssertNotEqual(tomorrow.map(\.out), first.map(\.out))
     }
 
+    func testRealRoundTripCalibratesOtherDays() {
+        var book = PriceBook()
+        let out = Day(year: 2027, month: 6, day: 12)
+        let back = Day(year: 2027, month: 7, day: 11)
+        book.putRoundTrip(Quote(price: 966, source: .serpapi, fetchedAt: Date(timeIntervalSinceNow: -86_400)),
+                          from: .parisAirports, to: .nosyBe, out: out, back: back)
+        let engine = RouteEngine(params: params, book: book)
+        let flight = NetworkData.connections.first { $0.id == "PAR-NOS" }!.options[0]
+        // Un autre jour de juin : estimation calibrée sur le prix réel (moitié de l'aller-retour).
+        let other = engine.priceOption(flight, from: .parisAirports, to: .nosyBe, day: Day(year: 2027, month: 6, day: 20))
+        XCTAssertEqual(other.price, 483)
+        XCTAssertEqual(other.quality, .estimate)
+        // Aux dates exactes, le billet aller-retour réel est retenu, même à égalité avec l'estimation.
+        let trip = engine.evaluate(outSignature: "TLS_V>PAR_G>PAR>NOS", inSignature: "NOS>PAR>PAR_G>TLS_V", out: out, back: back)
+        XCTAssertEqual(trip?.rtTickets.count, 1)
+        XCTAssertEqual(trip?.flightsAllReal, true)
+    }
     func testSchedulesMergeAndCodable() throws {
         var a = FeedSchedules()
         let journey = TrainJourney(departure: "06:10", arrival: "11:03", arrivalDayOffset: 0, durationMin: 293,

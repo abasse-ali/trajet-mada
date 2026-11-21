@@ -258,8 +258,10 @@ public struct RouteEngine: Sendable {
             guard let quote = book.roundTrip[PriceBook.key(o.from, o.to)]?[PriceBook.pairKey(o.day, b.day)] else { continue }
             let roundTrip = quote.price * Double(params.adults)
             let separate = o.chosen.price + b.chosen.price
-            if roundTrip < separate {
-                savings += separate - roundTrip
+            // Un prix aller-retour réel l'emporte sur deux allers simples seulement estimés.
+            let bothEstimated = o.chosen.quality == .estimate && b.chosen.quality == .estimate
+            if roundTrip < separate || bothEstimated {
+                savings += separate - roundTrip  // peut être négatif : le prix réel remplace l'estimation
                 tickets.append(RoundTripTicket(from: o.from, to: o.to, outDay: o.day, backDay: b.day,
                                                price: roundTrip, quality: quality(of: quote), quote: quote))
             }

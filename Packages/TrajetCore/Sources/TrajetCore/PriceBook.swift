@@ -110,13 +110,28 @@ public struct PriceBook: Codable, Sendable {
     }
 
     /// Prix médian observé par trajet et par mois (« PAR>TNR#2027-05 ») et par trajet.
-    /// Sert d'estimation réaliste les jours sans prix connu.
+    /// Sert d'estimation réaliste les jours sans prix connu. Un aller-retour réel compte pour
+    /// moitié dans chaque sens (965 € Paris ⇄ Nosy Be donne environ 483 € par trajet).
     public func calibration() -> [String: Double] {
         var buckets: [String: [Double]] = [:]
         for (route, days) in oneWay {
             for (day, quote) in days where quote.price > 0 {
                 buckets["\(route)#\(day.prefix(7))", default: []].append(quote.price)
                 buckets[route, default: []].append(quote.price)
+            }
+        }
+        for (route, pairs) in roundTrip {
+            let ends = route.split(separator: ">").map(String.init)
+            guard ends.count == 2 else { continue }
+            let reverse = "\(ends[1])>\(ends[0])"
+            for (pair, quote) in pairs where quote.price > 0 {
+                let days = pair.split(separator: "|").map(String.init)
+                guard days.count == 2 else { continue }
+                let half = quote.price / 2
+                buckets["\(route)#\(days[0].prefix(7))", default: []].append(half)
+                buckets["\(reverse)#\(days[1].prefix(7))", default: []].append(half)
+                buckets[route, default: []].append(half)
+                buckets[reverse, default: []].append(half)
             }
         }
         return buckets.mapValues { values in

@@ -19,7 +19,8 @@ public struct DataFeed: Decodable, Sendable {
         public let from: String
         public let to: String
         public let out: String
-        public let back: String
+        /// nil pour un aller simple.
+        public let back: String?
         public let at: String
     }
 
@@ -150,9 +151,8 @@ public enum FeedReader {
         var result: [String: Date] = [:]
         for t in feed.serpTried ?? [] {
             guard let from = PlaceID(rawValue: t.from), let to = PlaceID(rawValue: t.to),
-                  let out = Day(isoPrefix: t.out), let back = Day(isoPrefix: t.back),
-                  let at = date(t.at) else { continue }
-            result[Collector.serpKey(from, to, out, back)] = at
+                  let out = Day(isoPrefix: t.out), let at = date(t.at) else { continue }
+            result[Collector.serpKey(from, to, out, t.back.flatMap(Day.init(isoPrefix:)))] = at
         }
         return result
     }

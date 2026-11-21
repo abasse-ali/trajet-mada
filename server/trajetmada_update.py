@@ -51,8 +51,11 @@ FLIGHTS = [
     ("TNR", "DIE"), ("TNR", "NOS"), ("NOS", "DIE"),
 ]
 # Allers-retours à vérifier en priorité sur Google Flights (SerpApi).
-SERP_CORRIDORS = [("TLS", "DIE"), ("TLS", "NOS"), ("PAR", "TNR"), ("PAR", "NOS"),
-                  ("PAR", "DIE"), ("MIL", "NOS"), ("TLS", "TNR")]
+# Allers-retours vérifiés sur Google Flights (aller côté France). Pas de Toulouse-Diego ni Paris-Diego :
+# Google Flights ne vend aucun billet jusqu'à Antsiranana depuis la France.
+SERP_ROUND_TRIPS = [("TLS", "NOS"), ("PAR", "TNR"), ("PAR", "NOS"), ("MIL", "NOS"), ("TLS", "TNR")]
+# Vols intérieurs à Madagascar (Madagascar Airlines) sondés en aller simple.
+SERP_ONE_WAYS = [("TNR", "DIE"), ("DIE", "TNR"), ("TNR", "NOS"), ("NOS", "TNR")]
 FLIXBUS_CITIES = {"TLS_V": "40dfd612-8646-11e6-9066-549f350fcb0c",
                   "PAR_G": "40de8964-8646-11e6-9066-549f350fcb0c"}
 SNCF_IDS = {"TLS_V": "stop_area:SNCF:87611004", "PAR_G": "admin:fr:75056",
@@ -439,25 +442,7 @@ def fetch_sncf_schedules(http, log, key, start, end, today, quick):
 
 
 SERP_KEEP_DAYS = 10
-
-
-def probe_pairs(start, end, stay_min, stay_max, today):
-    """Dates à sonder sur Google Flights quand Aviasales n'a aucun prix : une par axe et par jour,
-    en tournant sur la période (un départ tous les 7 jours) pour la couvrir en une dizaine de jours."""
-    stay = (stay_min + stay_max) // 2
-    last_out = end - dt.timedelta(days=stay + 1)
-    grid = []
-    day = start
-    while day <= last_out:
-        grid.append(day)
-        day += dt.timedelta(days=7)
-    if not grid:
-        return {}
-    probes = {}
-    for index, corridor in enumerate(SERP_CORRIDORS):
-        out = grid[(today.toordinal() + index * 3) % len(grid)]
-        probes[corridor] = (out.isoformat(), (out + dt.timedelta(days=stay)).isoformat())
-    return probes
+SERP_DEAD_AFTER = 2
 
 
 def fresh(entries, stamp_field, now):
@@ -473,60 +458,111 @@ def fresh(entries, stamp_field, now):
     return kept
 
 
+def serp_id(entry):
+    """Identifiant d'une recherche : aller-retour (out, back) ou aller simple (day ou out seul)."""
+    out = entry.get("out") or entry.get("day")
+    return (entry["from"], entry["to"], out, entry.get("back"))
+
+
+def dead_routes(tried):
+    """Trajets où Google Flights n'a rien trouvé au moins SERP_DEAD_AFTER fois récemment."""
+    counts = {}
+    for t in tried:
+        counts[(t["from"], t["to"])] = counts.get((t["from"], t["to"]), 0) + 1
+    return set(route for route, n in counts.items() if n >= SERP_DEAD_AFTER)
+
+
+def probe_candidates(start, end, stay_min, stay_max, today, skip_routes):
+    """Une date à sonder par trajet, qui tourne chaque jour (un départ tous les 7 jours) :
+    allers-retours longs, puis vols intérieurs à Madagascar en aller simple."""
+    stay = (stay_min + stay_max) // 2
+    last_back = end - dt.timedelta(days=1)
+    round_grid, day = [], start
+    while day + dt.timedelta(days=stay) <= last_back:
+        round_grid.append(day)
+        day += dt.timedelta(days=7)
+    one_grid, day = [], start + dt.timedelta(days=1)
+    while day <= last_back:
+        one_grid.append(day)
+        day += dt.timedelta(days=7)
+    probes = []
+    for index, (a, b) in enumerate(SERP_ROUND_TRIPS):
+        if (a, b) in skip_routes or not round_grid:
+            continue
+        out = round_grid[(today.toordinal() + index * 3) % len(round_grid)]
+        probes.append({"from": a, "to": b, "out": out.isoformat(),
+                       "back": (out + dt.timedelta(days=stay)).isoformat(), "price": None, "order": index})
+    for offset, (a, b) in enumerate(SERP_ONE_WAYS):
+        index = len(SERP_ROUND_TRIPS) + offset
+        if (a, b) in skip_routes or not one_grid:
+            continue
+        out = one_grid[(today.toordinal() + index * 3) % len(one_grid)]
+        probes.append({"from": a, "to": b, "out": out.isoformat(), "back": None, "price": None, "order": index})
+    return probes
+
+
 def verify_serpapi(http, log, key, budget, adults, round_trip, previous, tried, stay_min, stay_max, start, end, today):
     """Google Flights (SerpApi) : vérifie l'aller-retour Aviasales le moins cher de chaque grand axe,
-    puis sonde d'autres dates sur les axes sans prix, dans la limite du budget quotidien.
-    Les recherches sans résultat sont mémorisées 10 jours pour ne pas être refaites."""
+    puis sonde les trajets (allers-retours longs, vols intérieurs à Madagascar), dans le budget du jour.
+    Les recherches sans résultat sont mémorisées 10 jours ; un trajet qui ne répond jamais est mis de côté."""
     now = utc_now()
     kept = fresh(previous, "fetchedAt", now)
     tried = fresh(tried, "at", now)
-    done = set((e["from"], e["to"], e["out"], e["back"]) for e in kept + tried)
-    verify, probes = [], []
-    for a, b in SERP_CORRIDORS:
-        options = [e for e in round_trip if e["from"] == a and e["to"] == b
-                   and stay_min <= (parse_day(e["back"]) - parse_day(e["out"])).days <= stay_max]
+    done = set(serp_id(e) for e in kept + tried)
+    dead = dead_routes(tried)
+    if dead:
+        log.info("Google Flights : trajets mis de côté (aucun résultat) : " + ", ".join("%s-%s" % r for r in sorted(dead)))
+    verify = []
+    for a, b in SERP_ROUND_TRIPS:
+        if (a, b) in dead:
+            continue
+        options = [e for e in round_trip if e["from"] == a and e["to"] == b and e.get("source") == "travelpayouts"
+                   and stay_min <= (parse_day(e["back"]) - parse_day(e["out"])).days <= stay_max
+                   and serp_id(e) not in done]
         if options:
             verify.append(min(options, key=lambda e: e["price"]))
     verify.sort(key=lambda e: e["price"])
+    verify_routes = set((e["from"], e["to"]) for e in verify)
     covered = set((e["from"], e["to"]) for e in kept)
-    for (a, b), (out, back) in probe_pairs(start, end, stay_min, stay_max, today).items():
-        # Les axes jamais vérifiés passent en premier.
-        probes.append(({"from": a, "to": b, "out": out, "back": back, "price": None}, (a, b) in covered))
-    probes.sort(key=lambda item: item[1])
-    candidates = verify + [p for p, _ in probes]
+    probes = [p for p in probe_candidates(start, end, stay_min, stay_max, today, dead | verify_routes)
+              if serp_id(p) not in done]
+    probes.sort(key=lambda p: ((p["from"], p["to"]) in covered, p["order"]))
+    candidates = verify + probes
     used = 0
     for c in candidates:
         if used >= budget:
             break
-        if (c["from"], c["to"], c["out"], c["back"]) in done:
-            continue
-        params = urllib.parse.urlencode({
-            "engine": "google_flights", "hl": "fr", "gl": "fr", "currency": "EUR", "deep_search": "true",
-            "type": "1", "departure_id": AIRPORTS[c["from"]][1], "arrival_id": AIRPORTS[c["to"]][1],
-            "outbound_date": c["out"], "return_date": c["back"], "adults": adults, "api_key": key})
+        one_way = not c.get("back")
+        label = "%s-%s %s%s" % (c["from"], c["to"], c["out"], "" if one_way else "/" + c["back"])
+        query = {"engine": "google_flights", "hl": "fr", "gl": "fr", "currency": "EUR", "deep_search": "true",
+                 "type": "2" if one_way else "1", "departure_id": AIRPORTS[c["from"]][1],
+                 "arrival_id": AIRPORTS[c["to"]][1], "outbound_date": c["out"], "adults": adults, "api_key": key}
+        if not one_way:
+            query["return_date"] = c["back"]
         used += 1
-        data = http.get_json("https://serpapi.com/search.json?" + params,
-                             "SerpApi %s-%s %s/%s" % (c["from"], c["to"], c["out"], c["back"]), timeout=120)
+        data = http.get_json("https://serpapi.com/search.json?" + urllib.parse.urlencode(query),
+                             "SerpApi " + label, timeout=120)
         options = ((data or {}).get("best_flights") or []) + ((data or {}).get("other_flights") or [])
         priced = [o for o in options if o.get("price")]
         if not priced:
-            tried.append({"from": c["from"], "to": c["to"], "out": c["out"], "back": c["back"], "at": iso_now()})
-            log.warning("Google Flights %s-%s %s/%s : aucun prix (pas refait avant 10 jours)"
-                        % (c["from"], c["to"], c["out"], c["back"]))
+            tried.append({"from": c["from"], "to": c["to"], "out": c["out"], "back": c.get("back"), "at": iso_now()})
+            log.warning("Google Flights %s : aucun prix (pas refait avant 10 jours)" % label)
             continue
         best = min(priced, key=lambda o: o["price"])
         airlines = []
         for seg in best.get("flights") or []:
             if seg.get("airline") and seg["airline"] not in airlines:
                 airlines.append(seg["airline"])
-        kept.append({"from": c["from"], "to": c["to"], "out": c["out"], "back": c["back"],
-                     "price": round(best["price"] / max(1, adults), 2), "source": "serpapi",
-                     "carrier": airlines[0] if airlines else None, "detail": " + ".join(airlines),
-                     "link": ((data or {}).get("search_metadata") or {}).get("google_flights_url"),
-                     "fetchedAt": iso_now()})
-        compare = "Aviasales : %s" % euro(c["price"] * adults) if c["price"] else "sondage, pas de prix Aviasales"
-        log.info("Google Flights %s-%s %s/%s : %s (%s)"
-                 % (c["from"], c["to"], c["out"], c["back"], euro(best["price"]), compare))
+        entry = {"from": c["from"], "to": c["to"], "price": round(best["price"] / max(1, adults), 2),
+                 "source": "serpapi", "carrier": airlines[0] if airlines else None, "detail": " + ".join(airlines),
+                 "link": ((data or {}).get("search_metadata") or {}).get("google_flights_url"), "fetchedAt": iso_now()}
+        if one_way:
+            entry["day"] = c["out"]
+        else:
+            entry["out"], entry["back"] = c["out"], c["back"]
+        kept.append(entry)
+        compare = ("Aviasales : %s" % euro(c["price"] * adults)) if c.get("price") else "sondage, pas de prix Aviasales"
+        log.info("Google Flights %s : %s (%s)" % (label, euro(best["price"]), compare))
     account = http.get_json("https://serpapi.com/account.json?" + urllib.parse.urlencode({"api_key": key}),
                             "SerpApi quota", quiet=True) or {}
     return kept, tried, used, account.get("total_searches_left", account.get("plan_searches_left"))
@@ -547,7 +583,7 @@ def write_report(path, feed, log, serp_left):
               "| Horaires SNCF | %d |" % stats["schedules"], ""]
     stay_min, stay_max = feed["stay"]["min"], feed["stay"]["max"]
     lines += ["## Aller-retour avion le moins cher par axe", "", "| Axe | Aller | Retour | Prix | Source |", "|---|---|---|---|---|"]
-    for a, b in SERP_CORRIDORS + [("PAR", "RUN"), ("PAR", "DZA")]:
+    for a, b in SERP_ROUND_TRIPS + [("PAR", "RUN"), ("PAR", "DZA")]:
         options = [e for e in feed["roundTrip"] if e["from"] == a and e["to"] == b
                    and stay_min <= (parse_day(e["back"]) - parse_day(e["out"])).days <= stay_max]
         if options:
@@ -555,6 +591,14 @@ def write_report(path, feed, log, serp_left):
             lines.append("| %s-%s | %s | %s | %s | %s |" % (a, b, best["out"], best["back"], euro(best["price"]), best["source"]))
         else:
             lines.append("| %s-%s | | | pas de prix | |" % (a, b))
+    lines += ["", "## Vols intérieurs à Madagascar (aller simple le moins cher)", ""]
+    for a, b in SERP_ONE_WAYS:
+        options = [e for e in feed["oneWay"] if e["from"] == a and e["to"] == b]
+        if options:
+            best = min(options, key=lambda e: e["price"])
+            lines.append("- %s-%s : %s le %s (%s)" % (a, b, euro(best["price"]), best["day"], best["source"]))
+        else:
+            lines.append("- %s-%s : pas de prix" % (a, b))
     if feed["bus"]:
         cheapest = sorted(feed["bus"], key=lambda e: e["price"])[:5]
         lines += ["", "## FlixBus les moins chers", ""]
@@ -653,8 +697,8 @@ def main():
         log.warning("Pas de clé SNCF : horaires des trains non mis à jour")
     serp_key = config.get("SERPAPI_KEY", "")
     serp_left = None
-    previous_serp = [e for e in previous.get("roundTrip", []) if e.get("source") == "serpapi"]
-    serp_quotes = list(previous_serp)
+    previous_serp = [e for e in previous.get("roundTrip", []) + previous.get("oneWay", []) if e.get("source") == "serpapi"]
+    serp_quotes = fresh(previous_serp, "fetchedAt", utc_now())
     feed["serpTried"] = fresh(previous.get("serpTried", []), "at", utc_now())
     if serp_key and not args.quick:
         try:
@@ -665,7 +709,8 @@ def main():
             log.info("SerpApi : %d recherche(s) utilisée(s), %s restante(s)" % (used, serp_left))
         except Exception as exc:
             log.error("SerpApi : %s" % exc)
-    feed["roundTrip"] = feed["roundTrip"] + serp_quotes
+    feed["roundTrip"] = feed["roundTrip"] + [e for e in serp_quotes if e.get("back")]
+    feed["oneWay"] = feed["oneWay"] + [e for e in serp_quotes if not e.get("back")]
     feed["stats"] = {"oneWay": len(feed["oneWay"]), "roundTrip": len(feed["roundTrip"]), "serpapi": len(serp_quotes),
                      "bus": len(feed["bus"]), "schedules": len(feed["schedules"]),
                      "requests": http.requests, "failures": http.failures,

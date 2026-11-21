@@ -329,12 +329,23 @@ final class AppModel {
                     guard let a = NetworkData.place(candidate.from).airport, let b = NetworkData.place(candidate.to).airport else { continue }
                     recordSerpUse()
                     do {
-                        let r = try await serp.roundTrip(from: a, to: b, out: candidate.out, back: candidate.back, adults: params.adults)
-                        let label = "Google Flights \(a.code)-\(b.code) \(Fmt.dayShort(candidate.out)) - \(Fmt.dayShort(candidate.back))"
+                        let r: SerpApiClient.FlightResult
+                        let label: String
+                        if let back = candidate.back {
+                            r = try await serp.roundTrip(from: a, to: b, out: candidate.out, back: back, adults: params.adults)
+                            label = "Google Flights \(a.code)-\(b.code) \(Fmt.dayShort(candidate.out)) - \(Fmt.dayShort(back))"
+                        } else {
+                            r = try await serp.oneWay(from: a, to: b, day: candidate.out, adults: params.adults)
+                            label = "Google Flights aller \(a.code)-\(b.code) \(Fmt.dayShort(candidate.out))"
+                        }
                         if let total = r.totalPrice {
-                            book.putRoundTrip(Quote(price: total / Double(params.adults), source: .serpapi, detail: r.detail,
-                                                    link: r.googleFlightsURL),
-                                              from: candidate.from, to: candidate.to, out: candidate.out, back: candidate.back)
+                            let quote = Quote(price: total / Double(params.adults), source: .serpapi, detail: r.detail,
+                                              link: r.googleFlightsURL)
+                            if let back = candidate.back {
+                                book.putRoundTrip(quote, from: candidate.from, to: candidate.to, out: candidate.out, back: back)
+                            } else {
+                                book.putOneWay(quote, from: candidate.from, to: candidate.to, day: candidate.out)
+                            }
                             found += 1
                             let compare = candidate.aviasalesPrice.map { "Aviasales : \(Fmt.euro($0 * Double(params.adults)))" }
                                 ?? "sondage d'une date sans prix Aviasales"
