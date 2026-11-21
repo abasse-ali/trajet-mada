@@ -77,15 +77,22 @@ public enum Collector {
     /// Allers-retours à vérifier sur Google Flights : d'abord le moins cher d'Aviasales sur chaque axe,
     /// puis un sondage par axe (date tournant chaque jour, axes jamais vérifiés en premier).
     /// Les couples déjà vérifiés depuis moins de `keepDays` jours (par l'app ou le serveur) sont ignorés.
+    /// Clé d'une recherche Google Flights : « TLS>DIE|2027-05-01|2027-05-30 ».
+    public static func serpKey(_ from: PlaceID, _ to: PlaceID, _ out: Day, _ back: Day) -> String {
+        "\(PriceBook.key(from, to))|\(PriceBook.pairKey(out, back))"
+    }
+
+    /// `skip` : recherches déjà tentées sans résultat (par l'iPhone ou le serveur), à ne pas refaire.
     public static func serpPlan(book: PriceBook, params: SearchParams, today: Day, budget: Int,
-                                now: Date = Date(), keepDays: Int = 10, rotationOffset: Int = 5) -> [SerpCandidate] {
+                                now: Date = Date(), keepDays: Int = 10, rotationOffset: Int = 5,
+                                skip: Set<String> = []) -> [SerpCandidate] {
         guard budget > 0 else { return [] }
         let keep = TimeInterval(keepDays) * 86_400
         let low = min(params.stayMin, params.stayMax)
         let high = max(params.stayMin, params.stayMax)
         let lastBack = params.lastReturnDay
 
-        var verified = Set<String>()
+        var verified = skip
         var covered = Set<String>()
         for (route, pairs) in book.roundTrip {
             for (pair, quote) in pairs where quote.source == .serpapi && now.timeIntervalSince(quote.fetchedAt) < keep {

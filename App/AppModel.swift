@@ -208,6 +208,18 @@ final class AppModel {
         defaults.set(used, forKey: "serpUsed")
     }
 
+    /// Recherches Google Flights tentées sans résultat (iPhone et serveur), gardées 10 jours pour ne pas les refaire.
+    private var serpTried: [String: Date] {
+        get {
+            let raw = UserDefaults.standard.dictionary(forKey: "serpTried") as? [String: Double] ?? [:]
+            let limit = Date().addingTimeInterval(-10 * 86_400)
+            return raw.mapValues { Date(timeIntervalSince1970: $0) }.filter { $0.value > limit }
+        }
+        set {
+            UserDefaults.standard.set(newValue.mapValues { $0.timeIntervalSince1970 }, forKey: "serpTried")
+        }
+    }
+
     // MARK: - Collecte complète (identique au serveur)
 
     /// Bouton « Chercher les prix réels ».
@@ -263,18 +275,22 @@ final class AppModel {
             }
         } else if !book.oneWay.isEmpty || !book.roundTrip.isEmpty {
             log.info(.scan, "Pas de jeton Travelpayouts sur l'iPhone : prix des vols du serveur utilisés")
+            summary.append("vols : ceux du serveur (pas de jeton Travelpayouts sur l'iPhone)")
         } else {
             log.warning(.scan, "Pas de jeton Travelpayouts : prix des vols estimés")
             message = "Prix des vols estimés : ajoutez un jeton Travelpayouts dans Réglages, ou installez le serveur de mise à jour."
         }
         if Task.isCancelled { return finishCancelled() }
 
-        // 4. FlixBus, chaque jour de la période et dans les deux sens.
-        let busRequests = Collector.busRequests(params: params, book: book)
+        // 4. FlixBus, chaque jour de la période et dans les deux sens (sauf prix relevés depuis moins de 12 h).
+        let busRequests = Collector.busRequests(params: params, book: book,
+                                                maxAge: LaunchOptions.forceCollect ? 0 : 12 * 3600)
         if !busRequests.isEmpty {
             progressText = "Prix FlixBus : 0 / \(busRequests.count)"
             let found = await fetchBuses(busRequests, progressFrom: 0.45, progressSpan: 0.30)
             summary.append("FlixBus : \(found) prix")
+        } else if params.modes.contains(.bus) {
+            summary.append("FlixBus : déjà à jour (relevé il y a moins de 12 h)")
         }
         if Task.isCancelled { return finishCancelled() }
 
@@ -301,7 +317,8 @@ final class AppModel {
         // 6. Google Flights : vérification et sondage des grands axes, dans le budget du jour.
         if hasSerpApi {
             let plan = Collector.serpPlan(book: book, params: params, today: today,
-                                          budget: max(0, serpDailyBudget - serpUsedToday))
+                                          budget: max(0, serpDailyBudget - serpUsedToday),
+                                          skip: Set(serpTried.keys))
             if !plan.isEmpty {
                 let serp = SerpApiClient(key: serpApiKey, http: HTTPClient(log: log))
                 var found = 0
@@ -323,7 +340,8 @@ final class AppModel {
                                 ?? "sondage d'une date sans prix Aviasales"
                             log.info(.api, "\(label) : \(Fmt.euro(total))", details: "\(compare)\n\(r.detail)")
                         } else {
-                            log.warning(.api, "\(label) : \(r.detail)")
+                            serpTried[Collector.serpKey(candidate.from, candidate.to, candidate.out, candidate.back)] = Date()
+                            log.warning(.api, "\(label) : \(r.detail) (ne sera pas refaite pendant 10 jours)")
                         }
                     } catch {
                         failures += 1
@@ -475,6 +493,7 @@ final class AppModel {
             let merged = FeedReader.merge(feed, into: book)
             book = merged.book
             trainSchedules.merge(FeedReader.schedules(feed))
+            serpTried.merge(FeedReader.serpTried(feed)) { max($0, $1) }
             feedDate = FeedReader.generatedDate(feed)
             Persist.saveData(data, "feed.json")
             Persist.save(book, "prices.json")

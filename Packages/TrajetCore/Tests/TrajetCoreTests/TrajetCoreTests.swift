@@ -312,6 +312,12 @@ final class CollectorTests: XCTestCase {
         let second = Collector.serpPlan(book: book, params: params, today: today, budget: 7)
         XCTAssertFalse(second.contains(done))
         XCTAssertEqual(second.count, 6)
+        // Une recherche déjà tentée sans résultat n'est pas refaite.
+        let empty = second[0]
+        let third = Collector.serpPlan(book: book, params: params, today: today, budget: 7,
+                                       skip: [Collector.serpKey(empty.from, empty.to, empty.out, empty.back)])
+        XCTAssertFalse(third.contains(empty))
+        XCTAssertEqual(third.count, 5)
         // Un jour plus tard, les dates sondées changent.
         let tomorrow = Collector.serpPlan(book: PriceBook(), params: params, today: today.adding(days: 1), budget: 7)
         XCTAssertNotEqual(tomorrow.map(\.out), first.map(\.out))

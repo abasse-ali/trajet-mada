@@ -45,7 +45,7 @@ shot() {
 
 # 1. Collecte complète sur l'iPhone : on attend le message « Collecte terminée » du journal (4 min au plus).
 xcrun simctl ui "$UDID" appearance light
-xcrun simctl launch "$UDID" "$BUNDLE" -autoSearch YES
+xcrun simctl launch "$UDID" "$BUNDLE" -autoSearch YES -forceCollect YES
 JOURNAL="$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data)/Library/Application Support/journal.jsonl"
 for i in $(seq 1 48); do
   sleep 5

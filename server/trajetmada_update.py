@@ -460,19 +460,27 @@ def probe_pairs(start, end, stay_min, stay_max, today):
     return probes
 
 
-def verify_serpapi(http, log, key, budget, adults, round_trip, previous, stay_min, stay_max, start, end, today):
-    """Google Flights (SerpApi) : vérifie l'aller-retour Aviasales le moins cher de chaque grand axe,
-    puis sonde d'autres dates sur les axes sans prix, dans la limite du budget quotidien."""
+def fresh(entries, stamp_field, now):
+    """Entrées de moins de SERP_KEEP_DAYS jours."""
     kept = []
-    now = utc_now()
-    for entry in previous:
+    for entry in entries:
         try:
-            age = now - dt.datetime.strptime(entry["fetchedAt"], "%Y-%m-%dT%H:%M:%SZ")
-        except (KeyError, ValueError):
+            age = now - dt.datetime.strptime(entry[stamp_field], "%Y-%m-%dT%H:%M:%SZ")
+        except (KeyError, ValueError, TypeError):
             continue
         if age < dt.timedelta(days=SERP_KEEP_DAYS):
             kept.append(entry)
-    done = set((e["from"], e["to"], e["out"], e["back"]) for e in kept)
+    return kept
+
+
+def verify_serpapi(http, log, key, budget, adults, round_trip, previous, tried, stay_min, stay_max, start, end, today):
+    """Google Flights (SerpApi) : vérifie l'aller-retour Aviasales le moins cher de chaque grand axe,
+    puis sonde d'autres dates sur les axes sans prix, dans la limite du budget quotidien.
+    Les recherches sans résultat sont mémorisées 10 jours pour ne pas être refaites."""
+    now = utc_now()
+    kept = fresh(previous, "fetchedAt", now)
+    tried = fresh(tried, "at", now)
+    done = set((e["from"], e["to"], e["out"], e["back"]) for e in kept + tried)
     verify, probes = [], []
     for a, b in SERP_CORRIDORS:
         options = [e for e in round_trip if e["from"] == a and e["to"] == b
@@ -502,7 +510,9 @@ def verify_serpapi(http, log, key, budget, adults, round_trip, previous, stay_mi
         options = ((data or {}).get("best_flights") or []) + ((data or {}).get("other_flights") or [])
         priced = [o for o in options if o.get("price")]
         if not priced:
-            log.warning("Google Flights %s-%s %s/%s : aucun prix" % (c["from"], c["to"], c["out"], c["back"]))
+            tried.append({"from": c["from"], "to": c["to"], "out": c["out"], "back": c["back"], "at": iso_now()})
+            log.warning("Google Flights %s-%s %s/%s : aucun prix (pas refait avant 10 jours)"
+                        % (c["from"], c["to"], c["out"], c["back"]))
             continue
         best = min(priced, key=lambda o: o["price"])
         airlines = []
@@ -519,7 +529,7 @@ def verify_serpapi(http, log, key, budget, adults, round_trip, previous, stay_mi
                  % (c["from"], c["to"], c["out"], c["back"], euro(best["price"]), compare))
     account = http.get_json("https://serpapi.com/account.json?" + urllib.parse.urlencode({"api_key": key}),
                             "SerpApi quota", quiet=True) or {}
-    return kept, used, account.get("total_searches_left", account.get("plan_searches_left"))
+    return kept, tried, used, account.get("total_searches_left", account.get("plan_searches_left"))
 
 
 # --------------------------------------------------------------------------- sorties
@@ -645,11 +655,13 @@ def main():
     serp_left = None
     previous_serp = [e for e in previous.get("roundTrip", []) if e.get("source") == "serpapi"]
     serp_quotes = list(previous_serp)
+    feed["serpTried"] = fresh(previous.get("serpTried", []), "at", utc_now())
     if serp_key and not args.quick:
         try:
             budget = int(config.get("SERPAPI_DAILY_LIMIT") or 5)
-            serp_quotes, used, serp_left = verify_serpapi(http, log, serp_key, budget, adults, feed["roundTrip"],
-                                                          previous_serp, stay_min, stay_max, start, end, today)
+            serp_quotes, feed["serpTried"], used, serp_left = verify_serpapi(
+                http, log, serp_key, budget, adults, feed["roundTrip"], previous_serp, feed["serpTried"],
+                stay_min, stay_max, start, end, today)
             log.info("SerpApi : %d recherche(s) utilisée(s), %s restante(s)" % (used, serp_left))
         except Exception as exc:
             log.error("SerpApi : %s" % exc)

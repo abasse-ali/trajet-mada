@@ -13,4 +13,6 @@ enum LaunchOptions {
     static var openFirst: Bool { defaults.bool(forKey: "openFirst") }
     /// Fait défiler jusqu'à la liste des résultats.
     static var scrollToResults: Bool { defaults.bool(forKey: "scrollResults") }
+    /// Relève à nouveau tous les prix FlixBus, même récents (test de la collecte).
+    static var forceCollect: Bool { defaults.bool(forKey: "forceCollect") }
 }
