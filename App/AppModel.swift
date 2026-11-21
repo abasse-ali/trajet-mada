@@ -139,17 +139,16 @@ final class AppModel {
         "\(step.from.rawValue)>\(step.to.rawValue)>\(step.day.key)"
     }
 
+    /// Horaires à afficher : ceux de l'API SNCF interrogée depuis l'iPhone, sinon ceux publiés par le serveur.
+    func displayedSchedule(for step: PricedStep) -> TrainSchedule? {
+        schedules[Self.scheduleKey(step)] ?? feedSchedules.schedule(from: step.from, to: step.to, day: step.day)
+    }
+
     /// Horaires réels SNCF d'une étape en train (jour exact si publié, sinon horaires types).
+    /// Sans clé SNCF sur l'iPhone, rien à charger : `displayedSchedule` lit les données du serveur.
     func loadSchedule(for step: PricedStep) async {
         let key = Self.scheduleKey(step)
-        guard schedules[key] == nil, !schedulesLoading.contains(key) else { return }
-        // Sans clé SNCF sur l'iPhone : horaires publiés par le serveur.
-        guard hasSNCF else {
-            if let fromFeed = feedSchedules.schedule(from: step.from, to: step.to, day: step.day) {
-                schedules[key] = fromFeed
-            }
-            return
-        }
+        guard hasSNCF, schedules[key] == nil, !schedulesLoading.contains(key) else { return }
         guard let from = NetworkData.place(step.from).sncfID,
               let to = NetworkData.place(step.to).sncfID else { return }
         schedulesLoading.insert(key)
@@ -171,11 +170,10 @@ final class AppModel {
                         ? "Jour exact : \(Fmt.dayLong(step.day))"
                         : "Horaires de \(Fmt.dayShort(step.day)) pas encore publiés : horaires types du \(Fmt.dayLong(reference.day))")
         } catch {
-            if let fromFeed = feedSchedules.schedule(from: step.from, to: step.to, day: step.day) {
-                schedules[key] = fromFeed
+            scheduleErrors[key] = error.localizedDescription
+            if feedSchedules.schedule(from: step.from, to: step.to, day: step.day) != nil {
                 log.warning(.api, "Horaires SNCF en direct indisponibles, horaires du serveur utilisés : \(error.localizedDescription)")
             } else {
-                scheduleErrors[key] = error.localizedDescription
                 log.error(.api, "Horaires SNCF : \(error.localizedDescription)")
             }
         }
@@ -204,7 +202,6 @@ final class AppModel {
             feedDate = FeedReader.generatedDate(feed)
             Persist.saveData(data, "feed.json")
             Persist.save(book, "prices.json")
-            if !hasSNCF { schedules = [:] }
             let stats = feed.stats ?? [:]
             feedStatus = "\(merged.added) prix et \(feed.schedules?.count ?? 0) horaires"
             log.info(.api, "Données du serveur \(feedDate.map { Fmt.age($0) } ?? "") : \(merged.added) prix, \(feed.schedules?.count ?? 0) horaires",

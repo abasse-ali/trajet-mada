@@ -332,7 +332,7 @@ struct TrainScheduleView: View {
         let key = AppModel.scheduleKey(step)
         let preferred = step.chosen.option.sncfMode
         Group {
-            if let schedule = model.schedules[key] {
+            if let schedule = model.displayedSchedule(for: step) {
                 DisclosureGroup(isExpanded: $expanded) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(schedule.exact
