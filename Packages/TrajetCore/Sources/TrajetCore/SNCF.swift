@@ -118,7 +118,7 @@ public struct SNCFFareClient: Sendable {
 
 // MARK: - Horaires réels (api.sncf.com, clé personnelle)
 
-public struct TrainJourney: Sendable, Identifiable, Hashable {
+public struct TrainJourney: Sendable, Identifiable, Hashable, Codable {
     public var id: String { "\(departure)-\(arrival)-\(trains.joined(separator: "+"))" }
     /// « 06:10 »
     public let departure: String
@@ -141,7 +141,7 @@ public struct SNCFWindow: Sendable, Codable, Equatable {
     public let end: Day
 }
 
-public struct TrainSchedule: Sendable {
+public struct TrainSchedule: Sendable, Codable {
     /// Jour du trajet.
     public let day: Day
     /// Jour réellement interrogé (le même si les horaires sont publiés).

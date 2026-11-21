@@ -49,6 +49,15 @@ elle reste valable un an.
 | [API SNCF](https://numerique.sncf.com/startup/api/) | vrais horaires des trains (publiés environ 1 mois à l'avance) | gratuit |
 | Open data SNCF | grille officielle des prix TGV, OUIGO, Intercités | sans clé |
 
+## Collecte sur l'iPhone
+
+L'app fait elle-même la même collecte que le serveur (bouton « Collecter les prix réels », ou
+Réglages, « Collecte sur l'iPhone ») : vols Travelpayouts, FlixBus pour chaque jour de la période,
+grille et horaires SNCF, vérifications Google Flights (budget quotidien réglable, quota SerpApi
+partagé avec le serveur). Elle peut aussi tourner seule chaque nuit en arrière-plan
+(BackgroundTasks d'iOS). Les clés se saisissent dans Réglages et restent dans le trousseau.
+Les données de l'iPhone et du serveur se complètent : le relevé le plus récent l'emporte.
+
 ## Serveur de mise à jour quotidienne (Oracle Cloud)
 
 Le script [server/trajetmada_update.py](server/trajetmada_update.py) (Python 3.6+, sans dépendance)

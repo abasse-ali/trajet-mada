@@ -43,7 +43,21 @@ shot() {
   echo "Capture : $name"
 }
 
-shot 01-recherche 45 light -autoSearch YES
+# 1. Collecte complète sur l'iPhone : on attend le message « Collecte terminée » du journal (4 min au plus).
+xcrun simctl ui "$UDID" appearance light
+xcrun simctl launch "$UDID" "$BUNDLE" -autoSearch YES
+JOURNAL="$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data)/Library/Application Support/journal.jsonl"
+for i in $(seq 1 48); do
+  sleep 5
+  if grep -q "Collecte terminée" "$JOURNAL" 2>/dev/null; then
+    echo "Collecte terminée après $((i * 5)) s : $(grep -o '"message":"Collecte terminée[^"]*"' "$JOURNAL" | tail -1)"
+    break
+  fi
+  [ "$i" = 48 ] && echo "ATTENTION : collecte non terminée après 4 min"
+done
+sleep 3
+xcrun simctl io "$UDID" screenshot "$OUT/01-recherche.png"
+echo "Capture : 01-recherche"
 shot 02-resultats 15 light -scrollResults YES
 shot 03-detail 15 light -openFirst YES
 shot 04-journal 8 light -tab 1

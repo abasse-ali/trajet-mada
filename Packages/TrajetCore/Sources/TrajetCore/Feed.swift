@@ -57,7 +57,7 @@ public struct DataFeed: Decodable, Sendable {
     }
 }
 
-public struct FeedSchedules: Sendable {
+public struct FeedSchedules: Sendable, Codable {
     /// Horaires d'un jour précis, clé « TLS_V>PAR_G>2027-05-10 ».
     public var exact: [String: TrainSchedule] = [:]
     /// Horaires types par jour de semaine, clé « TLS_V>PAR_G#2 ».
@@ -73,6 +73,13 @@ public struct FeedSchedules: Sendable {
     }
 
     public var isEmpty: Bool { exact.isEmpty && typical.isEmpty }
+    public var count: Int { exact.count + typical.count }
+
+    /// Ajoute d'autres horaires (les nouveaux remplacent les anciens pour un même trajet et un même jour).
+    public mutating func merge(_ other: FeedSchedules) {
+        exact.merge(other.exact) { _, new in new }
+        typical.merge(other.typical) { _, new in new }
+    }
 }
 
 public enum FeedReader {

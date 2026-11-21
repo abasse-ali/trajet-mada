@@ -106,7 +106,7 @@ jobs:
   simulator:
     needs: tests
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 

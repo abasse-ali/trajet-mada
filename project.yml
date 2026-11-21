@@ -31,6 +31,10 @@ targets:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        UIBackgroundModes:
+          - processing
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.trajetmada.app.collect
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.trajetmada.app

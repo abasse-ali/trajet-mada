@@ -20,10 +20,9 @@ enum SortKey: String, CaseIterable, Identifiable {
     }
 }
 
-struct BusRequest: Hashable, Sendable {
-    let from: PlaceID
-    let to: PlaceID
-    let day: Day
+enum CollectTrigger: String {
+    case manual = "manuelle"
+    case background = "automatique (arrière-plan)"
 }
 
 struct BusResult: Sendable {
@@ -31,9 +30,20 @@ struct BusResult: Sendable {
     let quote: Quote?
 }
 
+/// Compteur partagé entre les tâches parallèles pour afficher l'avancement.
+actor ProgressCounter {
+    private var value = 0
+    func next() -> Int {
+        value += 1
+        return value
+    }
+}
+
 @Observable
 @MainActor
 final class AppModel {
+    static let shared = AppModel()
+
     let log: LogStore
     var params: SearchParams
     var book: PriceBook
@@ -48,18 +58,27 @@ final class AppModel {
     var sncfKey: String
     var serpAccount: SerpApiClient.Account?
     var sncfWindow: SNCFWindow?
+    /// Horaires demandés à l'API SNCF pour une étape précise (clé personnelle sur l'iPhone).
     var schedules: [String: TrainSchedule] = [:]
     var scheduleErrors: [String: String] = [:]
     private var schedulesLoading: Set<String> = []
+    /// Horaires de tous les trains : collectés sur l'iPhone ou publiés par le serveur.
+    var trainSchedules = FeedSchedules()
+
     /// Données publiées chaque jour par le serveur Oracle (prix et horaires).
     var feedURL: String = UserDefaults.standard.string(forKey: "feedURL") ?? AppModel.defaultFeedURL
     var feedAutoUpdate: Bool = UserDefaults.standard.object(forKey: "feedAutoUpdate") as? Bool ?? true
-    var feedSchedules = FeedSchedules()
     var feedStatus: String?
     var feedDate: Date?
     var isSyncingFeed = false
-
     static let defaultFeedURL = "https://raw.githubusercontent.com/abasse-ali/trajet-mada/data/trajetmada-data.json"
+
+    /// Collecte sur l'iPhone.
+    var autoCollect: Bool = UserDefaults.standard.object(forKey: "autoCollect") as? Bool ?? true
+    var serpDailyBudget: Int = UserDefaults.standard.object(forKey: "serpBudget") as? Int ?? 2
+    var lastCollection: Date? = UserDefaults.standard.object(forKey: "lastCollection") as? Date
+    var lastCollectionSummary: String? = UserDefaults.standard.string(forKey: "lastCollectionSummary")
+
     var verifying: Set<String> = []
     var sort: SortKey = .price
     var onlyRealFlights = false
@@ -80,14 +99,17 @@ final class AppModel {
             + "Clé Travelpayouts : \(travelpayoutsToken.isEmpty ? "absente" : "présente"). "
             + "Clé SerpApi : \(serpApiKey.isEmpty ? "absente" : "présente"). "
             + "Clé SNCF : \(sncfKey.isEmpty ? "absente" : "présente").")
+        if let saved = Persist.load(FeedSchedules.self, "schedules.json") {
+            trainSchedules = saved
+        }
         if let saved = Persist.loadData("feed.json"), let feed = try? FeedReader.decode(saved) {
-            feedSchedules = FeedReader.schedules(feed)
+            if trainSchedules.isEmpty { trainSchedules = FeedReader.schedules(feed) }
             feedDate = FeedReader.generatedDate(feed)
         }
         Task {
             await self.recompute(reason: "ouverture de l'app")
             if self.feedAutoUpdate { await self.syncFeed() }
-            if LaunchOptions.autoSearch { await self.search() }
+            if LaunchOptions.autoSearch { await self.collectAll(trigger: .manual) }
         }
     }
 
@@ -133,22 +155,274 @@ final class AppModel {
             + "SNCF : \(hasSNCF ? "présente" : "absente")")
     }
 
+    func saveCollectSettings(auto: Bool, serpBudget: Int) {
+        autoCollect = auto
+        serpDailyBudget = max(0, serpBudget)
+        UserDefaults.standard.set(auto, forKey: "autoCollect")
+        UserDefaults.standard.set(serpDailyBudget, forKey: "serpBudget")
+        scheduleBackgroundCollection()
+    }
+
+    func saveFeedSettings(url: String, autoUpdate: Bool) {
+        feedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        feedAutoUpdate = autoUpdate
+        UserDefaults.standard.set(feedURL, forKey: "feedURL")
+        UserDefaults.standard.set(autoUpdate, forKey: "feedAutoUpdate")
+    }
+
+    func clearPrices() {
+        book = PriceBook()
+        trainSchedules = FeedSchedules()
+        Persist.remove("prices.json")
+        Persist.remove("schedules.json")
+        log.warning(.app, "Cache des prix et des horaires effacé")
+        Task { await recompute(reason: "cache effacé") }
+    }
+
+    func resetParams() {
+        params = SearchParams.defaults()
+        Persist.save(params, "params.json")
+        log.info(.app, "Paramètres remis par défaut", details: params.summary)
+    }
+
+    /// Programme (ou annule) la collecte automatique en arrière-plan.
+    func scheduleBackgroundCollection() {
+        if autoCollect {
+            BackgroundCollect.schedule(log: log)
+        } else {
+            BackgroundCollect.cancel()
+        }
+    }
+
+    // MARK: - Recherches Google Flights du jour (budget)
+
+    var serpUsedToday: Int {
+        let defaults = UserDefaults.standard
+        return defaults.string(forKey: "serpDay") == Day(localDate: Date()).key ? defaults.integer(forKey: "serpUsed") : 0
+    }
+
+    private func recordSerpUse() {
+        let defaults = UserDefaults.standard
+        let used = serpUsedToday + 1
+        defaults.set(Day(localDate: Date()).key, forKey: "serpDay")
+        defaults.set(used, forKey: "serpUsed")
+    }
+
+    // MARK: - Collecte complète (identique au serveur)
+
+    /// Bouton « Chercher les prix réels ».
+    func search() async {
+        await collectAll(trigger: .manual)
+    }
+
+    /// Relève tous les prix et horaires depuis l'iPhone : données du serveur, grille SNCF, vols
+    /// Travelpayouts, FlixBus jour par jour, horaires SNCF, vérifications Google Flights, puis recalcule.
+    @discardableResult
+    func collectAll(trigger: CollectTrigger) async -> Bool {
+        guard !isBusy else { return false }
+        isBusy = true
+        message = nil
+        progress = 0
+        defer { isBusy = false }
+        let started = Date()
+        let today = Day(localDate: Date())
+        Persist.save(params, "params.json")
+        log.info(.scan, "Collecte \(trigger.rawValue) lancée", details: params.summary)
+        var summary: [String] = []
+        var failures = 0
+
+        // 1. Données du serveur (facultatives : la collecte continue sans elles).
+        if feedAutoUpdate {
+            progressText = "Données du serveur…"
+            await syncFeed(recomputeAfter: false)
+        }
+
+        // 2. Grille officielle des prix SNCF.
+        progress = 0.04
+        progressText = "Grille des prix SNCF…"
+        await refreshTrainGrid()
+        if Task.isCancelled { return finishCancelled() }
+
+        // 3. Prix des vols (Travelpayouts / Aviasales).
+        if hasTravelpayouts {
+            let tasks = TravelpayoutsScanner.plan(params: params, network: FilteredNetwork(params: params))
+            progressText = "Prix des vols : 0 / \(tasks.count)"
+            let scanner = TravelpayoutsScanner(client: TravelpayoutsClient(token: travelpayoutsToken, http: HTTPClient(log: log)))
+            let (newBook, scan) = await scanner.run(tasks, into: book) { done, total in
+                Task { @MainActor in
+                    self.progress = 0.05 + 0.40 * Double(done) / Double(max(total, 1))
+                    self.progressText = "Prix des vols : \(done) / \(total)"
+                }
+            }
+            book = newBook
+            failures += scan.failures
+            summary.append("vols : \(scan.oneWayQuotes) allers simples et \(scan.roundTripQuotes) allers-retours")
+            log.log(scan.failures > 0 ? .warning : .info, .scan, scan.summary, details: scan.details)
+            if scan.requests > 0 && scan.failures == scan.requests {
+                message = "Aucune réponse de Travelpayouts. Vérifiez le jeton dans Réglages (détails dans le Journal)."
+            }
+        } else if !book.oneWay.isEmpty || !book.roundTrip.isEmpty {
+            log.info(.scan, "Pas de jeton Travelpayouts sur l'iPhone : prix des vols du serveur utilisés")
+        } else {
+            log.warning(.scan, "Pas de jeton Travelpayouts : prix des vols estimés")
+            message = "Prix des vols estimés : ajoutez un jeton Travelpayouts dans Réglages, ou installez le serveur de mise à jour."
+        }
+        if Task.isCancelled { return finishCancelled() }
+
+        // 4. FlixBus, chaque jour de la période et dans les deux sens.
+        let busRequests = Collector.busRequests(params: params, book: book)
+        if !busRequests.isEmpty {
+            progressText = "Prix FlixBus : 0 / \(busRequests.count)"
+            let found = await fetchBuses(busRequests, progressFrom: 0.45, progressSpan: 0.30)
+            summary.append("FlixBus : \(found) prix")
+        }
+        if Task.isCancelled { return finishCancelled() }
+
+        // 5. Horaires SNCF (jours publiés et horaires types par jour de semaine).
+        if hasSNCF {
+            progress = 0.76
+            progressText = "Horaires SNCF…"
+            do {
+                let collected = try await SNCFClient(key: sncfKey, http: HTTPClient(log: log))
+                    .collectSchedules(params: params, today: today)
+                trainSchedules.merge(collected.schedules)
+                sncfWindow = collected.window
+                Persist.save(trainSchedules, "schedules.json")
+                failures += collected.failures
+                summary.append("horaires SNCF : \(collected.schedules.count)")
+                log.info(.api, "Horaires SNCF : \(collected.schedules.count) relevés (publiés jusqu'au \(Fmt.dayLong(collected.window.end)))")
+            } catch {
+                failures += 1
+                log.error(.api, "Horaires SNCF : \(error.localizedDescription)")
+            }
+        }
+        if Task.isCancelled { return finishCancelled() }
+
+        // 6. Google Flights : vérification et sondage des grands axes, dans le budget du jour.
+        if hasSerpApi {
+            let plan = Collector.serpPlan(book: book, params: params, today: today,
+                                          budget: max(0, serpDailyBudget - serpUsedToday))
+            if !plan.isEmpty {
+                let serp = SerpApiClient(key: serpApiKey, http: HTTPClient(log: log))
+                var found = 0
+                for (index, candidate) in plan.enumerated() {
+                    if Task.isCancelled { break }
+                    progress = 0.83 + 0.09 * Double(index) / Double(plan.count)
+                    progressText = "Google Flights : \(index + 1) / \(plan.count)"
+                    guard let a = NetworkData.place(candidate.from).airport, let b = NetworkData.place(candidate.to).airport else { continue }
+                    recordSerpUse()
+                    do {
+                        let r = try await serp.roundTrip(from: a, to: b, out: candidate.out, back: candidate.back, adults: params.adults)
+                        let label = "Google Flights \(a.code)-\(b.code) \(Fmt.dayShort(candidate.out)) - \(Fmt.dayShort(candidate.back))"
+                        if let total = r.totalPrice {
+                            book.putRoundTrip(Quote(price: total / Double(params.adults), source: .serpapi, detail: r.detail,
+                                                    link: r.googleFlightsURL),
+                                              from: candidate.from, to: candidate.to, out: candidate.out, back: candidate.back)
+                            found += 1
+                            let compare = candidate.aviasalesPrice.map { "Aviasales : \(Fmt.euro($0 * Double(params.adults)))" }
+                                ?? "sondage d'une date sans prix Aviasales"
+                            log.info(.api, "\(label) : \(Fmt.euro(total))", details: "\(compare)\n\(r.detail)")
+                        } else {
+                            log.warning(.api, "\(label) : \(r.detail)")
+                        }
+                    } catch {
+                        failures += 1
+                        log.error(.api, "SerpApi : \(error.localizedDescription)")
+                    }
+                }
+                summary.append("Google Flights : \(found) prix")
+                await refreshAccount()
+            } else {
+                log.info(.api, "Google Flights : budget du jour déjà utilisé (\(serpUsedToday) / \(serpDailyBudget)) ou rien à vérifier")
+            }
+        }
+
+        // 7. Calcul de toutes les combinaisons.
+        progress = 0.93
+        progressText = "Calcul de toutes les combinaisons…"
+        await recompute(reason: "collecte \(trigger.rawValue)")
+        Persist.save(book, "prices.json")
+        let seconds = Int(Date().timeIntervalSince(started))
+        let text = summary.isEmpty ? "aucune nouvelle donnée" : summary.joined(separator: ", ")
+        lastCollection = Date()
+        lastCollectionSummary = text
+        UserDefaults.standard.set(lastCollection, forKey: "lastCollection")
+        UserDefaults.standard.set(text, forKey: "lastCollectionSummary")
+        log.log(failures > 0 ? .warning : .info, .scan, "Collecte terminée en \(seconds) s : \(text)",
+                details: "\(failures) requête(s) en échec. \(results.count) allers-retours calculés.")
+        progress = 1
+        progressText = "Terminé : \(results.count) allers-retours"
+        return true
+    }
+
+    private func finishCancelled() -> Bool {
+        Persist.save(book, "prices.json")
+        log.warning(.scan, "Collecte interrompue par iOS (temps d'arrière-plan écoulé) : les prix déjà relevés sont gardés")
+        progressText = "Collecte interrompue"
+        return false
+    }
+
+    func recompute(reason: String) async {
+        let params = self.params
+        let book = self.book
+        let result = await Task.detached(priority: .userInitiated) {
+            RouteEngine(params: params, book: book).run()
+        }.value
+        results = result.trips
+        bestByDay = result.bestByDay
+        stats = result.stats
+        visibleCount = 60
+        log.info(.engine, "Calcul (\(reason)) : \(result.trips.count) allers-retours", details: result.stats.description)
+    }
+
+    /// Prix FlixBus réels pour une liste de trajets (3 requêtes en parallèle).
+    @discardableResult
+    func fetchBuses(_ requests: [BusRequest], progressFrom: Double? = nil, progressSpan: Double = 0) async -> Int {
+        let client = FlixBusClient(http: HTTPClient(log: log))
+        let adults = params.adults
+        let counter = ProgressCounter()
+        let total = requests.count
+        let answers: [BusResult] = await boundedConcurrentMap(requests, limit: 3) { request in
+            let quote = try? await client.quote(from: request.from, to: request.to, day: request.day, adults: adults)
+            if let start = progressFrom {
+                let done = await counter.next()
+                Task { @MainActor in
+                    self.progress = start + progressSpan * Double(done) / Double(max(total, 1))
+                    self.progressText = "Prix FlixBus : \(done) / \(total)"
+                }
+            }
+            return BusResult(request: request, quote: quote ?? nil)
+        }
+        var found = 0
+        for answer in answers {
+            guard let quote = answer.quote else { continue }
+            book.putBus(quote, from: answer.request.from, to: answer.request.to, day: answer.request.day)
+            found += 1
+        }
+        log.info(.api, "FlixBus : \(found) prix réels sur \(requests.count) trajets demandés")
+        return found
+    }
+
     // MARK: - Trains SNCF
 
     static func scheduleKey(_ step: PricedStep) -> String {
         "\(step.from.rawValue)>\(step.to.rawValue)>\(step.day.key)"
     }
 
-    /// Horaires à afficher : ceux de l'API SNCF interrogée depuis l'iPhone, sinon ceux publiés par le serveur.
+    /// Horaires à afficher : demande précise à l'API SNCF, sinon horaires collectés (iPhone ou serveur).
     func displayedSchedule(for step: PricedStep) -> TrainSchedule? {
-        schedules[Self.scheduleKey(step)] ?? feedSchedules.schedule(from: step.from, to: step.to, day: step.day)
+        schedules[Self.scheduleKey(step)] ?? trainSchedules.schedule(from: step.from, to: step.to, day: step.day)
     }
 
-    /// Horaires réels SNCF d'une étape en train (jour exact si publié, sinon horaires types).
-    /// Sans clé SNCF sur l'iPhone, rien à charger : `displayedSchedule` lit les données du serveur.
+    /// Horaires SNCF d'une étape précise (jour exact si publié, sinon horaires types).
     func loadSchedule(for step: PricedStep) async {
         let key = Self.scheduleKey(step)
         guard hasSNCF, schedules[key] == nil, !schedulesLoading.contains(key) else { return }
+        // Déjà relevés par la collecte : pas besoin d'interroger l'API.
+        if let collected = trainSchedules.schedule(from: step.from, to: step.to, day: step.day), collected.exact {
+            schedules[key] = collected
+            return
+        }
         guard let from = NetworkData.place(step.from).sncfID,
               let to = NetworkData.place(step.to).sncfID else { return }
         schedulesLoading.insert(key)
@@ -171,24 +445,26 @@ final class AppModel {
                         : "Horaires de \(Fmt.dayShort(step.day)) pas encore publiés : horaires types du \(Fmt.dayLong(reference.day))")
         } catch {
             scheduleErrors[key] = error.localizedDescription
-            if feedSchedules.schedule(from: step.from, to: step.to, day: step.day) != nil {
-                log.warning(.api, "Horaires SNCF en direct indisponibles, horaires du serveur utilisés : \(error.localizedDescription)")
+            if trainSchedules.schedule(from: step.from, to: step.to, day: step.day) != nil {
+                log.warning(.api, "Horaires SNCF en direct indisponibles, horaires collectés utilisés : \(error.localizedDescription)")
             } else {
                 log.error(.api, "Horaires SNCF : \(error.localizedDescription)")
             }
         }
     }
 
-    // MARK: - Données du serveur Oracle
-
-    func saveFeedSettings(url: String, autoUpdate: Bool) {
-        feedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        feedAutoUpdate = autoUpdate
-        UserDefaults.standard.set(feedURL, forKey: "feedURL")
-        UserDefaults.standard.set(autoUpdate, forKey: "feedAutoUpdate")
+    /// Grille officielle des prix SNCF (open data, sans clé).
+    func refreshTrainGrid() async {
+        let grid = await SNCFFareClient(http: HTTPClient(log: log)).fetchToulouseParis()
+        guard !grid.isEmpty else { return }
+        book.trainGrid = grid
+        let lines = grid.sorted { $0.key < $1.key }.map { "\($0.key) : \(Fmt.euro($0.value.min)) à \(Fmt.euro($0.value.max))" }
+        log.info(.api, "Grille officielle SNCF mise à jour (\(grid.count) tarifs)", details: lines.joined(separator: "\n"))
     }
 
-    /// Télécharge les prix et horaires publiés par le serveur, les ajoute au carnet de prix et recalcule.
+    // MARK: - Données du serveur Oracle
+
+    /// Télécharge les prix et horaires publiés par le serveur, les ajoute à ceux de l'iPhone et recalcule.
     func syncFeed(recomputeAfter: Bool = true) async {
         guard !isSyncingFeed, let url = URL(string: feedURL), !feedURL.isEmpty else { return }
         isSyncingFeed = true
@@ -198,10 +474,11 @@ final class AppModel {
             let feed = try FeedReader.decode(data)
             let merged = FeedReader.merge(feed, into: book)
             book = merged.book
-            feedSchedules = FeedReader.schedules(feed)
+            trainSchedules.merge(FeedReader.schedules(feed))
             feedDate = FeedReader.generatedDate(feed)
             Persist.saveData(data, "feed.json")
             Persist.save(book, "prices.json")
+            Persist.save(trainSchedules, "schedules.json")
             let stats = feed.stats ?? [:]
             feedStatus = "\(merged.added) prix et \(feed.schedules?.count ?? 0) horaires"
             log.info(.api, "Données du serveur \(feedDate.map { Fmt.age($0) } ?? "") : \(merged.added) prix, \(feed.schedules?.count ?? 0) horaires",
@@ -216,130 +493,7 @@ final class AppModel {
         }
     }
 
-    /// Grille officielle des prix SNCF (open data, sans clé).
-    func refreshTrainGrid() async {
-        let grid = await SNCFFareClient(http: HTTPClient(log: log)).fetchToulouseParis()
-        guard !grid.isEmpty else { return }
-        book.trainGrid = grid
-        let lines = grid.sorted { $0.key < $1.key }.map { "\($0.key) : \(Fmt.euro($0.value.min)) à \(Fmt.euro($0.value.max))" }
-        log.info(.api, "Grille officielle SNCF mise à jour (\(grid.count) tarifs)", details: lines.joined(separator: "\n"))
-    }
-
-    func clearPrices() {
-        book = PriceBook()
-        Persist.remove("prices.json")
-        log.warning(.app, "Cache des prix effacé")
-        Task { await recompute(reason: "cache effacé") }
-    }
-
-    func resetParams() {
-        params = SearchParams.defaults()
-        Persist.save(params, "params.json")
-        log.info(.app, "Paramètres remis par défaut", details: params.summary)
-    }
-
-    // MARK: - Recherche
-
-    func search() async {
-        guard !isBusy else { return }
-        isBusy = true
-        message = nil
-        progress = 0
-        defer { isBusy = false }
-        Persist.save(params, "params.json")
-        log.info(.app, "Recherche lancée", details: params.summary)
-
-        if feedAutoUpdate {
-            progressText = "Données du serveur…"
-            await syncFeed(recomputeAfter: false)
-        }
-
-        if hasTravelpayouts {
-            let network = FilteredNetwork(params: params)
-            let tasks = TravelpayoutsScanner.plan(params: params, network: network)
-            progressText = "Prix des vols : 0 / \(tasks.count)"
-            log.info(.scan, "Scan des vols : \(tasks.count) requêtes Travelpayouts")
-            let client = TravelpayoutsClient(token: travelpayoutsToken, http: HTTPClient(log: log))
-            let scanner = TravelpayoutsScanner(client: client)
-            let (newBook, stats) = await scanner.run(tasks, into: book) { done, total in
-                Task { @MainActor in
-                    self.progress = 0.75 * Double(done) / Double(max(total, 1))
-                    self.progressText = "Prix des vols : \(done) / \(total)"
-                }
-            }
-            book = newBook
-            log.log(stats.failures > 0 ? .warning : .info, .scan, stats.summary, details: stats.details)
-            if stats.requests > 0 && stats.failures == stats.requests {
-                message = "Aucune réponse de Travelpayouts. Vérifiez le jeton dans Réglages (détails dans le Journal)."
-            }
-        } else if !book.oneWay.isEmpty || !book.roundTrip.isEmpty {
-            log.info(.scan, "Pas de jeton Travelpayouts sur l'iPhone : prix des vols du serveur utilisés")
-        } else {
-            log.warning(.scan, "Pas de jeton Travelpayouts : prix des vols estimés")
-            message = "Prix des vols estimés : ajoutez un jeton Travelpayouts dans Réglages, ou installez le serveur de mise à jour."
-        }
-
-        progress = 0.78
-        progressText = "Grille des prix SNCF…"
-        await refreshTrainGrid()
-        progress = 0.8
-        progressText = "Calcul de toutes les combinaisons…"
-        await recompute(reason: "après le scan")
-        await refreshBuses(top: 20)
-        Persist.save(book, "prices.json")
-        progress = 1
-        progressText = "Terminé : \(results.count) allers-retours"
-    }
-
-    func recompute(reason: String) async {
-        let params = self.params
-        let book = self.book
-        let result = await Task.detached(priority: .userInitiated) {
-            RouteEngine(params: params, book: book).run()
-        }.value
-        results = result.trips
-        bestByDay = result.bestByDay
-        stats = result.stats
-        visibleCount = 60
-        log.info(.engine, "Calcul (\(reason)) : \(result.trips.count) allers-retours", details: result.stats.description)
-    }
-
-    /// Prix FlixBus réels pour les meilleurs résultats.
-    func refreshBuses(top: Int) async {
-        var wanted = Set<BusRequest>()
-        for trip in results.prefix(top) {
-            for step in trip.outbound + trip.inbound where step.options.contains(where: { $0.option.kind == .flixbus }) {
-                if book.bus[PriceBook.key(step.from, step.to)]?[step.day.key] == nil {
-                    wanted.insert(BusRequest(from: step.from, to: step.to, day: step.day))
-                }
-            }
-        }
-        guard !wanted.isEmpty else { return }
-        let requests = wanted.sorted { $0.day < $1.day }
-        progressText = "Prix FlixBus : \(requests.count) trajets"
-        let fetched = await fetchBuses(requests)
-        if fetched > 0 { await recompute(reason: "prix FlixBus") }
-    }
-
-    @discardableResult
-    func fetchBuses(_ requests: [BusRequest]) async -> Int {
-        let client = FlixBusClient(http: HTTPClient(log: log))
-        let adults = params.adults
-        let answers: [BusResult] = await boundedConcurrentMap(requests, limit: 3) { request in
-            let quote = try? await client.quote(from: request.from, to: request.to, day: request.day, adults: adults)
-            return BusResult(request: request, quote: quote ?? nil)
-        }
-        var found = 0
-        for answer in answers {
-            guard let quote = answer.quote else { continue }
-            book.putBus(quote, from: answer.request.from, to: answer.request.to, day: answer.request.day)
-            found += 1
-        }
-        log.info(.api, "FlixBus : \(found) prix réels sur \(requests.count) trajets demandés")
-        return found
-    }
-
-    // MARK: - Vérification en temps réel
+    // MARK: - Vérification en temps réel d'un aller-retour
 
     func verify(_ trip: RoundTrip) async {
         guard hasSerpApi else {

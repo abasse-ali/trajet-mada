@@ -71,7 +71,7 @@ struct SearchView: View {
                             } else {
                                 Icon("ui.search", size: 18, color: .white)
                             }
-                            Text(model.isBusy ? "Recherche en cours…" : "Chercher les prix réels")
+                            Text(model.isBusy ? "Collecte en cours…" : "Collecter les prix réels")
                                 .font(.headline)
                             Spacer()
                         }
@@ -81,12 +81,22 @@ struct SearchView: View {
                     .listRowBackground(Color.accentColor)
                     .disabled(model.isBusy || model.params.destinations.isEmpty || !model.params.modes.contains(.avion))
 
-                    if model.isBusy || model.progress > 0 {
+                    if model.isBusy {
                         VStack(alignment: .leading, spacing: 6) {
                             ProgressView(value: model.progress)
                             Text(model.progressText)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                        }
+                    } else if let last = model.lastCollection {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Dernière collecte sur l'iPhone : \(Fmt.age(last))")
+                                .font(.caption.weight(.semibold))
+                            if let summary = model.lastCollectionSummary {
+                                Text(summary)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                     if !model.params.modes.contains(.avion) {

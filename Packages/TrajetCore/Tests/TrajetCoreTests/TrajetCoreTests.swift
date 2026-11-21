@@ -252,6 +252,87 @@ final class FeedTests: XCTestCase {
     }
 }
 
+final class CollectorTests: XCTestCase {
+    let params = SearchParams.defaults(today: Day(year: 2026, month: 11, day: 20))
+    let today = Day(year: 2026, month: 11, day: 21)
+
+    func testBusRequestsCoverEveryDayAndSkipFreshPrices() {
+        var book = PriceBook()
+        let all = Collector.busRequests(params: params, book: book)
+        XCTAssertEqual(all.count, 153 * 2, "153 jours de mai à septembre, dans les deux sens")
+        book.putBus(Quote(price: 30, source: .flixbus), from: .toulouse, to: .parisStations, day: Day(year: 2027, month: 5, day: 1))
+        book.putBus(Quote(price: 30, source: .flixbus, fetchedAt: Date(timeIntervalSinceNow: -86_400)),
+                    from: .parisStations, to: .toulouse, day: Day(year: 2027, month: 5, day: 1))
+        let remaining = Collector.busRequests(params: params, book: book)
+        XCTAssertEqual(remaining.count, 153 * 2 - 1, "seul le prix relevé il y a moins de 12 h est ignoré")
+        var noBus = params
+        noBus.modes.remove(.bus)
+        XCTAssertTrue(Collector.busRequests(params: noBus, book: book).isEmpty)
+    }
+
+    func testScheduleDays() {
+        let window = SNCFWindow(start: Day(year: 2026, month: 11, day: 18), end: Day(year: 2026, month: 12, day: 17))
+        let days = Collector.scheduleDays(params: params, window: window, today: today)
+        XCTAssertTrue(days.exact.isEmpty, "mai 2027 n'est pas encore publié")
+        XCTAssertEqual(Set(days.typical.keys), Set(1...7))
+        for (weekday, day) in days.typical {
+            XCTAssertEqual(day.weekday, weekday)
+            XCTAssertTrue(day > today && day <= window.end)
+        }
+        // Une fois la période publiée, les jours exacts sont interrogés.
+        let summer = SNCFWindow(start: Day(year: 2027, month: 4, day: 20), end: Day(year: 2027, month: 5, day: 20))
+        XCTAssertEqual(Collector.scheduleDays(params: params, window: summer, today: Day(year: 2027, month: 4, day: 21)).exact.count, 20)
+    }
+
+    func testSerpPlanVerifiesThenProbes() {
+        var book = PriceBook()
+        let out = Day(year: 2027, month: 5, day: 1)
+        book.putRoundTrip(Quote(price: 1013, source: .travelpayouts), from: .parisAirports, to: .tana, out: out, back: out.adding(days: 28))
+        book.putRoundTrip(Quote(price: 700, source: .travelpayouts), from: .parisAirports, to: .tana, out: out, back: out.adding(days: 10))
+        let plan = Collector.serpPlan(book: book, params: params, today: today, budget: 4)
+        XCTAssertEqual(plan.count, 4)
+        XCTAssertEqual(plan[0].aviasalesPrice, 1013, "vérifie d'abord l'aller-retour Aviasales dont le séjour convient")
+        XCTAssertEqual(plan[0].from, .parisAirports)
+        for probe in plan.dropFirst() {
+            XCTAssertNil(probe.aviasalesPrice)
+            XCTAssertTrue((28...30).contains(probe.out.days(until: probe.back)))
+            XCTAssertTrue(probe.back <= params.lastReturnDay)
+        }
+        XCTAssertEqual(Set(plan.map { "\($0.from)\($0.to)" }).count, 4, "un sondage par axe")
+        XCTAssertTrue(Collector.serpPlan(book: book, params: params, today: today, budget: 0).isEmpty)
+    }
+
+    func testSerpPlanSkipsWhatTheServerAlreadyVerified() {
+        var book = PriceBook()
+        let first = Collector.serpPlan(book: book, params: params, today: today, budget: 7)
+        XCTAssertEqual(first.count, 7)
+        // Le serveur a vérifié le premier sondage : l'app ne le refait pas et passe aux axes non couverts.
+        let done = first[0]
+        book.putRoundTrip(Quote(price: 965, source: .serpapi), from: done.from, to: done.to, out: done.out, back: done.back)
+        let second = Collector.serpPlan(book: book, params: params, today: today, budget: 7)
+        XCTAssertFalse(second.contains(done))
+        XCTAssertEqual(second.count, 6)
+        // Un jour plus tard, les dates sondées changent.
+        let tomorrow = Collector.serpPlan(book: PriceBook(), params: params, today: today.adding(days: 1), budget: 7)
+        XCTAssertNotEqual(tomorrow.map(\.out), first.map(\.out))
+    }
+
+    func testSchedulesMergeAndCodable() throws {
+        var a = FeedSchedules()
+        let journey = TrainJourney(departure: "06:10", arrival: "11:03", arrivalDayOffset: 0, durationMin: 293,
+                                   transfers: 0, trains: ["TGV INOUI 8502"], modes: ["TGV INOUI"], fare: nil)
+        let day = Day(year: 2026, month: 11, day: 22)
+        a.typical["TLS_V>PAR_G#1"] = TrainSchedule(day: day, referenceDay: day, exact: false, journeys: [])
+        var b = FeedSchedules()
+        b.typical["TLS_V>PAR_G#1"] = TrainSchedule(day: day, referenceDay: day, exact: false, journeys: [journey])
+        a.merge(b)
+        XCTAssertEqual(a.typical["TLS_V>PAR_G#1"]?.journeys.count, 1)
+        let decoded = try JSONDecoder().decode(FeedSchedules.self, from: JSONEncoder().encode(a))
+        XCTAssertEqual(decoded.count, 1)
+        XCTAssertEqual(decoded.typical["TLS_V>PAR_G#1"]?.journeys.first, journey)
+    }
+}
+
 final class LinkTests: XCTestCase {
     let par = NetworkData.place(.parisAirports).airport!
     let tnr = NetworkData.place(.tana).airport!

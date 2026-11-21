@@ -22,11 +22,59 @@ struct SettingsForm: View {
     @State private var sncf = ""
     @State private var feedURL = ""
     @State private var feedAuto = true
+    @State private var autoCollect = true
+    @State private var serpBudget = 2
     @State private var saved = false
     @State private var confirmClear = false
 
     var body: some View {
         Form {
+            Section {
+                Button {
+                    Task { await model.collectAll(trigger: .manual) }
+                } label: {
+                    HStack(spacing: 8) {
+                        if model.isBusy {
+                            ProgressView()
+                        } else {
+                            Icon("ui.refresh", size: 16, color: .accentColor)
+                        }
+                        Text(model.isBusy ? model.progressText : "Lancer la collecte complète maintenant")
+                    }
+                }
+                .disabled(model.isBusy)
+                if model.isBusy {
+                    ProgressView(value: model.progress)
+                }
+                Toggle("Collecte automatique chaque nuit", isOn: $autoCollect)
+                Stepper(value: $serpBudget, in: 0...10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Google Flights : \(serpBudget) recherche\(serpBudget > 1 ? "s" : "") par jour")
+                        Text("Utilisées aujourd'hui par l'iPhone : \(model.serpUsedToday)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let last = model.lastCollection {
+                    LabeledContent("Dernière collecte", value: Fmt.age(last))
+                    if let summary = model.lastCollectionSummary {
+                        Text(summary)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("Collecte sur l'iPhone")
+            } footer: {
+                Text("L'iPhone relève lui-même tout ce que relève le serveur : vols (Travelpayouts), FlixBus pour chaque jour, grille et horaires SNCF, vérifications Google Flights. Il faut les clés ci-dessous. La collecte de nuit est lancée par iOS quand l'iPhone a du réseau, souvent pendant la charge ; ouvrez l'app de temps en temps pour qu'iOS continue à la proposer. La clé SerpApi a 250 recherches par mois au total, partagées avec le serveur (5 par jour).")
+            }
+            .onChange(of: autoCollect) { _, value in
+                model.saveCollectSettings(auto: value, serpBudget: serpBudget)
+            }
+            .onChange(of: serpBudget) { _, value in
+                model.saveCollectSettings(auto: autoCollect, serpBudget: value)
+            }
+
             Section {
                 Toggle("Mettre à jour à l'ouverture", isOn: $feedAuto)
                 TextField("Adresse des données", text: $feedURL, axis: .vertical)
@@ -144,6 +192,7 @@ struct SettingsForm: View {
                 LabeledContent("Prix aller simple", value: "\(counts.oneWay)")
                 LabeledContent("Prix aller-retour", value: "\(counts.roundTrip)")
                 LabeledContent("Prix FlixBus", value: "\(counts.bus)")
+                LabeledContent("Horaires SNCF", value: "\(model.trainSchedules.count)")
                 if let last = model.book.lastScan {
                     LabeledContent("Dernier scan", value: last.formatted(date: .abbreviated, time: .shortened))
                 }
@@ -170,6 +219,8 @@ struct SettingsForm: View {
             sncf = model.sncfKey
             feedURL = model.feedURL
             feedAuto = model.feedAutoUpdate
+            autoCollect = model.autoCollect
+            serpBudget = model.serpDailyBudget
             saved = false
         }
         .task { await model.refreshAccount() }
