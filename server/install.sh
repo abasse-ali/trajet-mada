@@ -108,10 +108,12 @@ crontab -l | grep 'trajetmada_update.py'
 say "Premier lancement (2 à 5 minutes)"
 python3 "$BASE/app/server/trajetmada_update.py" 2>&1 | tee -a "$BASE/update.log" | tail -n 15 || true
 
-cat <<EOF
-
-== Terminé
-
+printf '\n== Terminé\n\n'
+if ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes -T git@github.com 2>&1 \
+     | grep -q "successfully authenticated"; then
+  echo "Publication vers GitHub : autorisée. Les données sont mises à jour chaque jour à ${HOUR} h."
+else
+  cat <<EOF
 Il reste une étape, une seule fois : autoriser ce serveur à publier sur GitHub.
 Ajoutez cette clé publique au dépôt abasse-ali/trajet-mada :
   Settings > Deploy keys > Add deploy key, titre « Oracle », cochez « Allow write access ».
@@ -120,6 +122,10 @@ $(cat "$KEY.pub")
 
 Ensuite, testez la publication :
   python3 $BASE/app/server/trajetmada_update.py
+EOF
+fi
+
+cat <<EOF
 
 Journal des mises à jour : $BASE/update.log
 Résumé lisible du dernier passage : $BASE/data/rapport.md
