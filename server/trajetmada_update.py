@@ -438,8 +438,31 @@ def fetch_sncf_schedules(http, log, key, start, end, today, quick):
     return schedules, {"start": w_start.isoformat(), "end": w_end.isoformat()}
 
 
-def verify_serpapi(http, log, key, budget, adults, round_trip, previous, stay_min, stay_max):
-    """Vérifie sur Google Flights les allers-retours les moins chers des grands axes."""
+SERP_KEEP_DAYS = 10
+
+
+def probe_pairs(start, end, stay_min, stay_max, today):
+    """Dates à sonder sur Google Flights quand Aviasales n'a aucun prix : une par axe et par jour,
+    en tournant sur la période (un départ tous les 7 jours) pour la couvrir en une dizaine de jours."""
+    stay = (stay_min + stay_max) // 2
+    last_out = end - dt.timedelta(days=stay + 1)
+    grid = []
+    day = start
+    while day <= last_out:
+        grid.append(day)
+        day += dt.timedelta(days=7)
+    if not grid:
+        return {}
+    probes = {}
+    for index, corridor in enumerate(SERP_CORRIDORS):
+        out = grid[(today.toordinal() + index * 3) % len(grid)]
+        probes[corridor] = (out.isoformat(), (out + dt.timedelta(days=stay)).isoformat())
+    return probes
+
+
+def verify_serpapi(http, log, key, budget, adults, round_trip, previous, stay_min, stay_max, start, end, today):
+    """Google Flights (SerpApi) : vérifie l'aller-retour Aviasales le moins cher de chaque grand axe,
+    puis sonde d'autres dates sur les axes sans prix, dans la limite du budget quotidien."""
     kept = []
     now = utc_now()
     for entry in previous:
@@ -447,16 +470,22 @@ def verify_serpapi(http, log, key, budget, adults, round_trip, previous, stay_mi
             age = now - dt.datetime.strptime(entry["fetchedAt"], "%Y-%m-%dT%H:%M:%SZ")
         except (KeyError, ValueError):
             continue
-        if age < dt.timedelta(hours=72):
+        if age < dt.timedelta(days=SERP_KEEP_DAYS):
             kept.append(entry)
     done = set((e["from"], e["to"], e["out"], e["back"]) for e in kept)
-    candidates = []
+    verify, probes = [], []
     for a, b in SERP_CORRIDORS:
         options = [e for e in round_trip if e["from"] == a and e["to"] == b
                    and stay_min <= (parse_day(e["back"]) - parse_day(e["out"])).days <= stay_max]
         if options:
-            candidates.append(min(options, key=lambda e: e["price"]))
-    candidates.sort(key=lambda e: e["price"])
+            verify.append(min(options, key=lambda e: e["price"]))
+    verify.sort(key=lambda e: e["price"])
+    covered = set((e["from"], e["to"]) for e in kept)
+    for (a, b), (out, back) in probe_pairs(start, end, stay_min, stay_max, today).items():
+        # Les axes jamais vérifiés passent en premier.
+        probes.append(({"from": a, "to": b, "out": out, "back": back, "price": None}, (a, b) in covered))
+    probes.sort(key=lambda item: item[1])
+    candidates = verify + [p for p, _ in probes]
     used = 0
     for c in candidates:
         if used >= budget:
@@ -485,8 +514,9 @@ def verify_serpapi(http, log, key, budget, adults, round_trip, previous, stay_mi
                      "carrier": airlines[0] if airlines else None, "detail": " + ".join(airlines),
                      "link": ((data or {}).get("search_metadata") or {}).get("google_flights_url"),
                      "fetchedAt": iso_now()})
-        log.info("Google Flights %s-%s %s/%s : %s (Aviasales : %s)"
-                 % (c["from"], c["to"], c["out"], c["back"], euro(best["price"]), euro(c["price"] * adults)))
+        compare = "Aviasales : %s" % euro(c["price"] * adults) if c["price"] else "sondage, pas de prix Aviasales"
+        log.info("Google Flights %s-%s %s/%s : %s (%s)"
+                 % (c["from"], c["to"], c["out"], c["back"], euro(best["price"]), compare))
     account = http.get_json("https://serpapi.com/account.json?" + urllib.parse.urlencode({"api_key": key}),
                             "SerpApi quota", quiet=True) or {}
     return kept, used, account.get("total_searches_left", account.get("plan_searches_left"))
@@ -619,7 +649,7 @@ def main():
         try:
             budget = int(config.get("SERPAPI_DAILY_LIMIT") or 5)
             serp_quotes, used, serp_left = verify_serpapi(http, log, serp_key, budget, adults, feed["roundTrip"],
-                                                          previous_serp, stay_min, stay_max)
+                                                          previous_serp, stay_min, stay_max, start, end, today)
             log.info("SerpApi : %d recherche(s) utilisée(s), %s restante(s)" % (used, serp_left))
         except Exception as exc:
             log.error("SerpApi : %s" % exc)
