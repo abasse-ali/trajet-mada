@@ -131,6 +131,62 @@ public struct SerpApiClient: Sendable {
         ], label: "SerpApi aller \(from.code)-\(to.code) \(day.key)")
     }
 
+    public struct CalendarPrice: Sendable {
+        public let out: Day
+        /// nil pour un aller simple.
+        public let back: Day?
+        /// Prix total pour tous les voyageurs (€).
+        public let price: Double
+    }
+
+    struct CalendarResponse: Decodable {
+        let prices: [Entry]?
+        let error: String?
+        struct Entry: Decodable {
+            let outboundDate: String?
+            let returnDate: String?
+            let price: Double?
+        }
+    }
+
+    public static func parseCalendar(_ data: Data) throws -> [CalendarPrice] {
+        let response = try decoder().decode(CalendarResponse.self, from: data)
+        if let error = response.error {
+            if error.localizedCaseInsensitiveContains("returned any results") { return [] }
+            throw APIError.api(error)
+        }
+        return (response.prices ?? []).compactMap { entry in
+            guard let price = entry.price, price > 0,
+                  let out = entry.outboundDate.flatMap(Day.init(isoPrefix:)) else { return nil }
+            return CalendarPrice(out: out, back: entry.returnDate.flatMap(Day.init(isoPrefix:)), price: price)
+        }
+    }
+
+    /// Calendrier des prix Google Flights : un prix réel par date de départ de la période
+    /// (aller-retour de `stay` jours, ou aller simple si `stay` est nil). Une seule recherche.
+    public func calendar(_ job: CalendarJob, adults: Int) async throws -> [CalendarPrice] {
+        guard let from = NetworkData.place(job.from).airport, let to = NetworkData.place(job.to).airport else { return [] }
+        var components = URLComponents(string: "https://serpapi.com/search.json")!
+        var items = [
+            URLQueryItem(name: "engine", value: "google_flights_calendar"),
+            URLQueryItem(name: "departure_id", value: from.calendarID),
+            URLQueryItem(name: "arrival_id", value: to.calendarID),
+            URLQueryItem(name: "type", value: job.stay == nil ? "2" : "1"),
+            URLQueryItem(name: "date_range_start", value: job.start.key),
+            URLQueryItem(name: "date_range_end", value: job.end.key),
+            URLQueryItem(name: "currency", value: "EUR"),
+            URLQueryItem(name: "hl", value: "fr"),
+            URLQueryItem(name: "gl", value: "fr"),
+            URLQueryItem(name: "adults", value: String(adults)),
+            URLQueryItem(name: "api_key", value: key),
+        ]
+        if let stay = job.stay { items.append(URLQueryItem(name: "round_trip_days", value: String(stay))) }
+        components.queryItems = items
+        let label = "Calendrier Google Flights \(from.code)-\(to.code) " + (job.stay.map { "\($0) jours" } ?? "aller simple")
+        let data = try await http.get(components.url!, label: label, timeout: 120)
+        return try Self.parseCalendar(data)
+    }
+
     public func account() async throws -> Account {
         var components = URLComponents(string: "https://serpapi.com/account.json")!
         components.queryItems = [URLQueryItem(name: "api_key", value: key)]

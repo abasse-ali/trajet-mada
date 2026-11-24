@@ -81,7 +81,8 @@ final class AppModel {
 
     var verifying: Set<String> = []
     var sort: SortKey = .price
-    var onlyRealFlights = false
+    /// N'afficher que les allers-retours dont toutes les étapes ont un prix réel (par défaut).
+    var onlyComplete = true
     var visibleCount = 60
     var message: String?
 
@@ -119,16 +120,16 @@ final class AppModel {
 
     var sortedResults: [RoundTrip] {
         var list = results
-        if onlyRealFlights { list = list.filter { $0.flightsAllReal } }
+        if onlyComplete { list = list.filter(\.isComplete) }
         switch sort {
         case .price:
-            list.sort { $0.total < $1.total }
+            list.sort { ($0.unpriced, $0.total) < ($1.unpriced, $1.total) }
         case .duration:
             list.sort { ($0.outDurationMin + $0.inDurationMin, $0.total) < ($1.outDurationMin + $1.inDurationMin, $1.total) }
         case .simple:
             list.sort { ($0.tickets, $0.unprotected, $0.total) < ($1.tickets, $1.unprotected, $1.total) }
         case .real:
-            list.sort { $0.realShare > $1.realShare || ($0.realShare == $1.realShare && $0.total < $1.total) }
+            list.sort { ($0.unpriced, $0.total) < ($1.unpriced, $1.total) }
         }
         return list
     }
@@ -208,18 +209,6 @@ final class AppModel {
         defaults.set(used, forKey: "serpUsed")
     }
 
-    /// Recherches Google Flights tentées sans résultat (iPhone et serveur), gardées 10 jours pour ne pas les refaire.
-    private var serpTried: [String: Date] {
-        get {
-            let raw = UserDefaults.standard.dictionary(forKey: "serpTried") as? [String: Double] ?? [:]
-            let limit = Date().addingTimeInterval(-10 * 86_400)
-            return raw.mapValues { Date(timeIntervalSince1970: $0) }.filter { $0.value > limit }
-        }
-        set {
-            UserDefaults.standard.set(newValue.mapValues { $0.timeIntervalSince1970 }, forKey: "serpTried")
-        }
-    }
-
     // MARK: - Collecte complète (identique au serveur)
 
     /// Bouton « Chercher les prix réels ».
@@ -253,6 +242,7 @@ final class AppModel {
         progress = 0.04
         progressText = "Grille des prix SNCF…"
         await refreshTrainGrid()
+        await refreshRate()
         if Task.isCancelled { return finishCancelled() }
 
         // 3. Prix des vols (Travelpayouts / Aviasales).
@@ -277,8 +267,8 @@ final class AppModel {
             log.info(.scan, "Pas de jeton Travelpayouts sur l'iPhone : prix des vols du serveur utilisés")
             summary.append("vols : ceux du serveur (pas de jeton Travelpayouts sur l'iPhone)")
         } else {
-            log.warning(.scan, "Pas de jeton Travelpayouts : prix des vols estimés")
-            message = "Prix des vols estimés : ajoutez un jeton Travelpayouts dans Réglages, ou installez le serveur de mise à jour."
+            log.warning(.scan, "Pas de jeton Travelpayouts ni de données du serveur : aucun prix de vol")
+            message = "Aucun prix de vol : ajoutez vos clés dans Réglages, ou installez le serveur de mise à jour."
         }
         if Task.isCancelled { return finishCancelled() }
 
@@ -314,55 +304,41 @@ final class AppModel {
         }
         if Task.isCancelled { return finishCancelled() }
 
-        // 6. Google Flights : vérification et sondage des grands axes, dans le budget du jour.
+        // 6. Google Flights : calendriers des prix (un prix réel par date de départ), les plus anciens d'abord.
         if hasSerpApi {
-            let plan = Collector.serpPlan(book: book, params: params, today: today,
-                                          budget: max(0, serpDailyBudget - serpUsedToday),
-                                          skip: Set(serpTried.keys))
+            let plan = Collector.calendarPlan(params: params, fetched: book.calendarFetched,
+                                              budget: max(0, serpDailyBudget - serpUsedToday))
             if !plan.isEmpty {
                 let serp = SerpApiClient(key: serpApiKey, http: HTTPClient(log: log))
                 var found = 0
-                for (index, candidate) in plan.enumerated() {
+                for (index, job) in plan.enumerated() {
                     if Task.isCancelled { break }
                     progress = 0.83 + 0.09 * Double(index) / Double(plan.count)
-                    progressText = "Google Flights : \(index + 1) / \(plan.count)"
-                    guard let a = NetworkData.place(candidate.from).airport, let b = NetworkData.place(candidate.to).airport else { continue }
+                    progressText = "Calendriers Google Flights : \(index + 1) / \(plan.count)"
                     recordSerpUse()
+                    let label = "\(NetworkData.place(job.from).short) - \(NetworkData.place(job.to).short) "
+                        + (job.stay.map { "(\($0) jours)" } ?? "(aller simple)")
                     do {
-                        let r: SerpApiClient.FlightResult
-                        let label: String
-                        if let back = candidate.back {
-                            r = try await serp.roundTrip(from: a, to: b, out: candidate.out, back: back, adults: params.adults)
-                            label = "Google Flights \(a.code)-\(b.code) \(Fmt.dayShort(candidate.out)) - \(Fmt.dayShort(back))"
+                        let prices = try await serp.calendar(job, adults: params.adults)
+                        let stored = Collector.store(prices, for: job, adults: params.adults, into: &book)
+                        found += stored
+                        if let cheapest = prices.min(by: { $0.price < $1.price }) {
+                            log.info(.api, "Calendrier Google Flights \(label) : \(stored) dates, dès \(Fmt.euro(cheapest.price))",
+                                     details: "Le moins cher : \(Fmt.dayShort(cheapest.out))"
+                                        + (cheapest.back.map { " - \(Fmt.dayShort($0))" } ?? ""))
                         } else {
-                            r = try await serp.oneWay(from: a, to: b, day: candidate.out, adults: params.adults)
-                            label = "Google Flights aller \(a.code)-\(b.code) \(Fmt.dayShort(candidate.out))"
-                        }
-                        if let total = r.totalPrice {
-                            let quote = Quote(price: total / Double(params.adults), source: .serpapi, detail: r.detail,
-                                              link: r.googleFlightsURL)
-                            if let back = candidate.back {
-                                book.putRoundTrip(quote, from: candidate.from, to: candidate.to, out: candidate.out, back: back)
-                            } else {
-                                book.putOneWay(quote, from: candidate.from, to: candidate.to, day: candidate.out)
-                            }
-                            found += 1
-                            let compare = candidate.aviasalesPrice.map { "Aviasales : \(Fmt.euro($0 * Double(params.adults)))" }
-                                ?? "sondage d'une date sans prix Aviasales"
-                            log.info(.api, "\(label) : \(Fmt.euro(total))", details: "\(compare)\n\(r.detail)")
-                        } else {
-                            serpTried[Collector.serpKey(candidate.from, candidate.to, candidate.out, candidate.back)] = Date()
-                            log.warning(.api, "\(label) : \(r.detail) (ne sera pas refaite pendant 10 jours)")
+                            log.warning(.api, "Calendrier Google Flights \(label) : aucun vol trouvé")
                         }
                     } catch {
                         failures += 1
-                        log.error(.api, "SerpApi : \(error.localizedDescription)")
+                        log.error(.api, "Calendrier Google Flights \(label) : \(error.localizedDescription)")
                     }
                 }
                 summary.append("Google Flights : \(found) prix")
                 await refreshAccount()
             } else {
-                log.info(.api, "Google Flights : budget du jour déjà utilisé (\(serpUsedToday) / \(serpDailyBudget)) ou rien à vérifier")
+                log.info(.api, "Calendriers Google Flights : tous relevés depuis moins de 4 jours, ou budget du jour utilisé")
+                summary.append("Google Flights : à jour")
             }
         }
 
@@ -482,6 +458,17 @@ final class AppModel {
         }
     }
 
+    /// Taux de change réel euro/ariary (pour les tarifs publiés en ariary).
+    func refreshRate() async {
+        do {
+            let result = try await ExchangeRateClient(http: HTTPClient(log: log)).euroToAriary()
+            book.setRate(result.rate, at: result.date)
+            log.info(.api, "Taux de change : 1 € = \(Fmt.ariary(result.rate.rounded()))")
+        } catch {
+            log.warning(.api, "Taux de change indisponible : \(error.localizedDescription)")
+        }
+    }
+
     /// Grille officielle des prix SNCF (open data, sans clé).
     func refreshTrainGrid() async {
         let grid = await SNCFFareClient(http: HTTPClient(log: log)).fetchToulouseParis()
@@ -504,7 +491,6 @@ final class AppModel {
             let merged = FeedReader.merge(feed, into: book)
             book = merged.book
             trainSchedules.merge(FeedReader.schedules(feed))
-            serpTried.merge(FeedReader.serpTried(feed)) { max($0, $1) }
             feedDate = FeedReader.generatedDate(feed)
             Persist.saveData(data, "feed.json")
             Persist.save(book, "prices.json")

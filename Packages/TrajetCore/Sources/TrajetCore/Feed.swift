@@ -12,17 +12,11 @@ public struct DataFeed: Decodable, Sendable {
     public let schedules: [ScheduleEntry]?
     public let sncfWindow: Period?
     public let stats: [String: Int]?
-    /// Recherches Google Flights tentées sans résultat par le serveur (à ne pas refaire).
-    public let serpTried: [Tried]?
-
-    public struct Tried: Decodable, Sendable {
-        public let from: String
-        public let to: String
-        public let out: String
-        /// nil pour un aller simple.
-        public let back: String?
-        public let at: String
-    }
+    /// Taux de change réel (ariary pour 1 euro) et date du relevé.
+    public let mgaPerEur: Double?
+    public let mgaRateAt: String?
+    /// Dernier relevé de chaque calendrier de prix Google Flights (clé « PAR>NOS#29 »).
+    public let calendarFetched: [String: String]?
 
     public struct Period: Decodable, Sendable {
         public let start: String
@@ -143,18 +137,13 @@ public enum FeedReader {
         if let grid = feed.trainGrid, !grid.isEmpty {
             book.trainGrid = grid
         }
-        return (book, added)
-    }
-
-    /// Recherches Google Flights sans résultat signalées par le serveur, avec leur date.
-    public static func serpTried(_ feed: DataFeed) -> [String: Date] {
-        var result: [String: Date] = [:]
-        for t in feed.serpTried ?? [] {
-            guard let from = PlaceID(rawValue: t.from), let to = PlaceID(rawValue: t.to),
-                  let out = Day(isoPrefix: t.out), let at = date(t.at) else { continue }
-            result[Collector.serpKey(from, to, out, t.back.flatMap(Day.init(isoPrefix:)))] = at
+        if let rate = feed.mgaPerEur {
+            book.setRate(rate, at: date(feed.mgaRateAt) ?? fallbackDate)
         }
-        return result
+        for (key, stamp) in feed.calendarFetched ?? [:] {
+            if let at = date(stamp) { book.markCalendar(key, at: at) }
+        }
+        return (book, added)
     }
 
     public static func schedules(_ feed: DataFeed) -> FeedSchedules {

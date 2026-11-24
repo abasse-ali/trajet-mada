@@ -123,9 +123,8 @@ extension PriceQuality {
         switch self {
         case .live: return .green
         case .cached: return .teal
-        case .tariff: return .gray
-        case .grid: return .indigo
-        case .estimate: return .orange
+        case .tariff: return .indigo
+        case .unknown: return .orange
         }
     }
 
@@ -134,8 +133,7 @@ extension PriceQuality {
         case .live: return "ui.bolt"
         case .cached: return "ui.check"
         case .tariff: return "ui.ticket"
-        case .grid: return "ui.ticket"
-        case .estimate: return "ui.info"
+        case .unknown: return "ui.info"
         }
     }
 }

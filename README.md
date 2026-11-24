@@ -10,13 +10,16 @@ du moins cher au plus cher.
 - 63 trajets possibles par sens (train, OUIGO, train de nuit, FlixBus, BlaBlaCar, avion via Paris,
   Milan, La Réunion, Mayotte, Johannesburg, Tana, taxi-brousse, vedette, taxi privé) sur
   369 paires de dates, soit environ 170 000 combinaisons évaluées en moins d'une seconde.
-- **Prix réels** :
-  - vols : scan de toutes les dates avec Travelpayouts (Aviasales), puis vérification en temps
-    réel sur Google Flights via SerpApi ; billets aller-retour utilisés quand ils sont moins chers ;
-  - FlixBus : prix, horaires et places en temps réel ;
-  - trains SNCF (TGV INOUI, OUIGO, Intercités de nuit) : grille officielle des prix de l'open data
-    SNCF (minimum et maximum) et vrais horaires via l'API SNCF (clé gratuite) ;
-  - BlaBlaCar, taxi-brousse, vedette : pas d'API publique, estimation clairement signalée.
+- **Uniquement des prix réels, aucun prix inventé** :
+  - vols : calendriers de prix Google Flights (un prix réel par date de départ, toutes les durées
+    de séjour, environ 20 recherches SerpApi pour toute la période) et prix Aviasales ;
+  - FlixBus : prix, horaires et places réels pour chaque jour ;
+  - transports urbains : tarifs officiels (Tisséo 1,90 €, ticket aéroports de Paris 14 €) ;
+  - bateau Ankify-Nosy Be : tarifs publiés (20 000 Ar la vedette, 8 000 Ar le bac), convertis au
+    taux de change réel du jour ;
+  - trains SNCF, BlaBlaCar, taxi-brousse, Cotisse : aucun prix publié en ligne (ou billets pas encore
+    en vente) ; l'étape est marquée « prix non publié » et n'est pas comptée. Par défaut, seuls les
+    allers-retours entièrement à prix réels sont listés.
 - Chaque étape affiche la source et la fiabilité de son prix, et des **liens préremplis** (Google
   Flights, Skyscanner, Kayak, Aviasales, FlixBus, BlaBlaCar ; Kayak multi-destinations pour tout
   le voyage).
@@ -67,7 +70,8 @@ relève chaque matin, sur toute la période :
 - les prix FlixBus Toulouse ⇄ Paris pour chaque jour (environ 300 prix) ;
 - la grille officielle des prix SNCF ;
 - les horaires SNCF (jours publiés et horaires types par jour de semaine) ;
-- une vérification Google Flights des allers-retours les moins chers (5 recherches SerpApi par jour).
+- les calendriers de prix Google Flights les plus anciens (5 recherches SerpApi par jour, chaque calendrier refait tous les 4 jours) ;
+- le taux de change euro/ariary.
 
 Il écrit `trajetmada-data.json` et un résumé lisible `rapport.md`, puis les publie sur la branche
 `data` de ce dépôt. L'app les télécharge à l'ouverture (Réglages, « Données du serveur »).

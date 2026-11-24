@@ -49,8 +49,8 @@ struct SettingsForm: View {
                 Toggle("Collecte automatique chaque nuit", isOn: $autoCollect)
                 Stepper(value: $serpBudget, in: 0...10) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Google Flights : \(serpBudget) recherche\(serpBudget > 1 ? "s" : "") par jour")
-                        Text("Utilisées aujourd'hui par l'iPhone : \(model.serpUsedToday)")
+                        Text("Calendriers Google Flights : \(serpBudget) par jour")
+                        Text("Utilisés aujourd'hui par l'iPhone : \(model.serpUsedToday) (1 calendrier = 1 recherche = environ 120 dates)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -66,7 +66,7 @@ struct SettingsForm: View {
             } header: {
                 Text("Collecte sur l'iPhone")
             } footer: {
-                Text("L'iPhone relève lui-même tout ce que relève le serveur : vols (Travelpayouts), FlixBus pour chaque jour, grille et horaires SNCF, vérifications Google Flights. Il faut les clés ci-dessous. La collecte de nuit est lancée par iOS quand l'iPhone a du réseau, souvent pendant la charge ; ouvrez l'app de temps en temps pour qu'iOS continue à la proposer. La clé SerpApi a 250 recherches par mois au total, partagées avec le serveur (5 par jour).")
+                Text("L'iPhone relève lui-même tout ce que relève le serveur : calendriers de prix Google Flights (un prix réel par date de départ), vols Aviasales, FlixBus pour chaque jour, horaires SNCF, taux de change. Il faut les clés ci-dessous. La collecte de nuit est lancée par iOS quand l'iPhone a du réseau, souvent pendant la charge. La clé SerpApi a 250 recherches par mois au total, partagées avec le serveur ; un calendrier déjà relevé par le serveur depuis moins de 4 jours n'est pas refait.")
             }
             .onChange(of: autoCollect) { _, value in
                 model.saveCollectSettings(auto: value, serpBudget: serpBudget)
@@ -123,7 +123,7 @@ struct SettingsForm: View {
             } header: {
                 Text("1. Scan des prix des vols (gratuit)")
             } footer: {
-                Text("Parcourt toutes les dates de la période avec les prix vus par les utilisateurs d'Aviasales ces 2 à 7 derniers jours. Jeton : menu Profil, rubrique API token.")
+                Text("Prix des vols vus par les utilisateurs d'Aviasales ces 2 à 7 derniers jours (souvent peu de dates pour l'été prochain). Jeton : menu Profil, rubrique API token.")
             }
 
             Section {
@@ -136,7 +136,7 @@ struct SettingsForm: View {
             } header: {
                 Text("2. Vérification en temps réel (Google Flights)")
             } footer: {
-                Text("Vérifie un aller-retour précis sur Google Flights au moment où vous le consultez. Offre gratuite : 250 recherches par mois.")
+                Text("Calendriers de prix Google Flights (un prix réel pour chaque date de départ) et vérification d'un aller-retour précis. Offre gratuite : 250 recherches par mois.")
             }
 
             Section {
@@ -203,10 +203,11 @@ struct SettingsForm: View {
             }
 
             Section {
-                Text("Trains SNCF, OUIGO et Intercités de nuit : pas d'API publique de prix au jour près (réservée aux revendeurs sous contrat). L'app utilise la grille officielle SNCF (prix minimum et maximum, open data) et retient le premier quart de la fourchette, soit le prix d'un billet pris tôt. Les horaires viennent de l'API SNCF.")
-                Text("BlaBlaCar : API réservée aux partenaires. Lien prérempli avec la ville et la date.")
-                Text("Taxi-brousse, Cotisse, vedettes d'Ankify : pas de vente en ligne, réservation sur place ou par téléphone. Prix estimés d'après des relevés (1 € = environ 5 000 à 5 300 Ar).")
-                Text("Estimations relevées en \(NetworkData.dataDate). Les vols sont recherchés « toutes compagnies » : Air France, Corsair, Ethiopian, Air Austral, French Bee, Ewa Air, Neos, Airlink, Madagascar Airlines…")
+                Text("Aucun prix n'est inventé. Une étape sans prix publié en ligne affiche « prix non publié » et n'est pas comptée dans le total ; par défaut, seuls les trajets entièrement à prix réels sont listés.")
+                Text("Vols : Google Flights (calendrier des prix) et Aviasales. Bus : FlixBus. Transports urbains : tarifs officiels Tisséo (1,90 €) et Île-de-France Mobilités (14 €). Bateau Ankify-Nosy Be : tarifs publiés (vedette 20 000 Ar, bac 8 000 Ar), convertis au taux de change du jour.")
+                Text("Trains SNCF, OUIGO et Intercités de nuit : pas d'API publique de prix, et les billets de l'été prochain ne sont pas encore en vente. La grille officielle SNCF est affichée pour information ; les horaires viennent de l'API SNCF.")
+                Text("BlaBlaCar, taxi-brousse, Cotisse, taxi privé : pas de prix publié en ligne. Ces étapes sont affichées sans prix, avec les liens et contacts utiles.")
+                Text("Les vols sont recherchés « toutes compagnies » : Air France, Corsair, Ethiopian, Air Austral, French Bee, Ewa Air, Neos, Airlink, Madagascar Airlines…")
             } header: {
                 Text("Sources des prix")
             }

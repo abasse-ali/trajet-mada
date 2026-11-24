@@ -140,7 +140,9 @@ struct SummaryView: View {
                     Text(Fmt.euro(trip.total))
                         .font(.largeTitle.bold())
                         .monospacedDigit()
-                    Text("aller-retour, \(adults) adulte\(adults > 1 ? "s" : ""), tout compris")
+                    Text(trip.isComplete
+                         ? "aller-retour, \(adults) adulte\(adults > 1 ? "s" : ""), tout compris"
+                         : "aller-retour, \(adults) adulte\(adults > 1 ? "s" : ""), hors étapes sans prix publié")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -153,11 +155,15 @@ struct SummaryView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            ProgressView(value: trip.realShare) {
-                Text("\(Int((trip.realShare * 100).rounded())) % du total vient de prix réels ou de tarifs connus")
+            HStack(alignment: .top, spacing: 6) {
+                Icon(trip.isComplete ? "ui.check" : "ui.alert", size: 14, color: trip.isComplete ? .green : .orange)
+                Text(trip.isComplete
+                     ? "Tous les prix sont réels : relevés en ligne ou tarifs officiels."
+                     : "\(trip.unpriced) étape\(trip.unpriced > 1 ? "s n'ont" : " n'a") pas de prix publié en ligne : le total ne les compte pas.")
                     .font(.caption)
+                    .foregroundStyle(trip.isComplete ? Color.green : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .tint(trip.realShare >= 0.75 ? .green : (trip.realShare >= 0.4 ? .teal : .orange))
             HStack(spacing: 16) {
                 label("ui.calendar", "Aller", "\(Fmt.dayShort(trip.outDay)), \(Fmt.duration(trip.outDurationMin))")
                 label("ui.calendar", "Retour", "\(Fmt.dayShort(trip.backDay)), \(Fmt.duration(trip.inDurationMin))")
@@ -216,12 +222,18 @@ struct StepRow: View {
                     if step.roundTripPaired {
                         Text("billet AR")
                             .font(.subheadline.weight(.semibold))
-                    } else {
+                    } else if step.chosen.isKnown {
                         Text(Fmt.euro(step.chosen.price))
                             .font(.headline)
                             .monospacedDigit()
+                    } else {
+                        Text("prix non publié")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.orange)
                     }
-                    QualityPill(quality: step.chosen.quality)
+                    if !step.roundTripPaired {
+                        QualityPill(quality: step.chosen.quality)
+                    }
                 }
             }
 
@@ -230,6 +242,12 @@ struct StepRow: View {
                      + (quote.source == .sncf ? "" : " · relevé \(Fmt.age(quote.fetchedAt))"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !step.roundTripPaired, let info = step.chosen.info {
+                Text(info)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text("Fréquence : \(option.frequency)")
@@ -284,7 +302,7 @@ struct StepRow: View {
                                 Text(alternative.option.operatorName)
                                     .font(.footnote.weight(.semibold))
                                 Spacer()
-                                Text(Fmt.euro(alternative.price))
+                                Text(alternative.isKnown ? Fmt.euro(alternative.price) : "prix non publié")
                                     .font(.footnote.weight(.semibold))
                                     .monospacedDigit()
                                 QualityPill(quality: alternative.quality)

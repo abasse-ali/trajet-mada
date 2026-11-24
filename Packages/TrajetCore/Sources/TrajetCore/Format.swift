@@ -18,6 +18,17 @@ public enum Fmt {
         return (rounded < 0 ? "-" : "") + String(grouped.reversed()) + narrowSpace + "€"
     }
 
+    /// « 20 000 Ar »
+    public static func ariary(_ value: Double) -> String {
+        let digits = String(Int(value.rounded()))
+        var grouped = ""
+        for (i, ch) in digits.reversed().enumerated() {
+            if i > 0 && i % 3 == 0 { grouped.append(narrowSpace) }
+            grouped.append(ch)
+        }
+        return String(grouped.reversed()) + narrowSpace + "Ar"
+    }
+
     /// « 1 j 6 h », « 14 h 20 », « 45 min »
     public static func duration(_ minutes: Int) -> String {
         let m = max(0, minutes)

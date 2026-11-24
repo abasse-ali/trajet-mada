@@ -442,7 +442,9 @@ def fetch_sncf_schedules(http, log, key, start, end, today, quick):
 
 
 SERP_KEEP_DAYS = 10
-SERP_DEAD_AFTER = 2
+CALENDAR_MAX_AGE_DAYS = 4
+# Identifiant unique par lieu pour le calendrier Google Flights (Paris : toutes ses aérogares).
+CALENDAR_IDS = {"PAR": "/m/05qtj", "MIL": "MXP"}
 
 
 def fresh(entries, stamp_field, now):
@@ -458,114 +460,105 @@ def fresh(entries, stamp_field, now):
     return kept
 
 
-def serp_id(entry):
-    """Identifiant d'une recherche : aller-retour (out, back) ou aller simple (day ou out seul)."""
-    out = entry.get("out") or entry.get("day")
-    return (entry["from"], entry["to"], out, entry.get("back"))
-
-
-def dead_routes(tried):
-    """Trajets où Google Flights n'a rien trouvé au moins SERP_DEAD_AFTER fois récemment."""
-    counts = {}
-    for t in tried:
-        counts[(t["from"], t["to"])] = counts.get((t["from"], t["to"]), 0) + 1
-    return set(route for route, n in counts.items() if n >= SERP_DEAD_AFTER)
-
-
-def probe_candidates(start, end, stay_min, stay_max, today, skip_routes):
-    """Une date à sonder par trajet, qui tourne chaque jour (un départ tous les 7 jours) :
-    allers-retours longs, puis vols intérieurs à Madagascar en aller simple."""
-    stay = (stay_min + stay_max) // 2
+def calendar_jobs(start, end, stay_min, stay_max):
+    """Tous les calendriers de prix : chaque grand axe pour chaque durée de séjour, et chaque vol
+    intérieur en aller simple (environ 20 recherches pour couvrir toute la période)."""
     last_back = end - dt.timedelta(days=1)
-    round_grid, day = [], start
-    while day + dt.timedelta(days=stay) <= last_back:
-        round_grid.append(day)
-        day += dt.timedelta(days=7)
-    one_grid, day = [], start + dt.timedelta(days=1)
-    while day <= last_back:
-        one_grid.append(day)
-        day += dt.timedelta(days=7)
-    probes = []
-    for index, (a, b) in enumerate(SERP_ROUND_TRIPS):
-        if (a, b) in skip_routes or not round_grid:
+    jobs = []
+    for stay in range(min(stay_min, stay_max), max(stay_min, stay_max) + 1):
+        last_out = last_back - dt.timedelta(days=stay)
+        if last_out < start:
             continue
-        out = round_grid[(today.toordinal() + index * 3) % len(round_grid)]
-        probes.append({"from": a, "to": b, "out": out.isoformat(),
-                       "back": (out + dt.timedelta(days=stay)).isoformat(), "price": None, "order": index})
-    for offset, (a, b) in enumerate(SERP_ONE_WAYS):
-        index = len(SERP_ROUND_TRIPS) + offset
-        if (a, b) in skip_routes or not one_grid:
-            continue
-        out = one_grid[(today.toordinal() + index * 3) % len(one_grid)]
-        probes.append({"from": a, "to": b, "out": out.isoformat(), "back": None, "price": None, "order": index})
-    return probes
+        for a, b in SERP_ROUND_TRIPS:
+            jobs.append({"from": a, "to": b, "stay": stay, "start": start, "end": last_out,
+                         "key": "%s>%s#%d" % (a, b, stay)})
+    for a, b in SERP_ONE_WAYS:
+        jobs.append({"from": a, "to": b, "stay": None, "start": start, "end": last_back,
+                     "key": "%s>%s#aller" % (a, b)})
+    return jobs
 
 
-def verify_serpapi(http, log, key, budget, adults, round_trip, previous, tried, stay_min, stay_max, start, end, today):
-    """Google Flights (SerpApi) : vérifie l'aller-retour Aviasales le moins cher de chaque grand axe,
-    puis sonde les trajets (allers-retours longs, vols intérieurs à Madagascar), dans le budget du jour.
-    Les recherches sans résultat sont mémorisées 10 jours ; un trajet qui ne répond jamais est mis de côté."""
+def calendar_plan(jobs, fetched, budget, now):
+    """Calendriers jamais relevés, puis les plus anciens, s'ils datent de plus de 4 jours."""
+    def last(job):
+        try:
+            return dt.datetime.strptime(fetched[job["key"]], "%Y-%m-%dT%H:%M:%SZ")
+        except (KeyError, ValueError, TypeError):
+            return dt.datetime.min
+    due = [(last(job), index, job) for index, job in enumerate(jobs)
+           if now - last(job) >= dt.timedelta(days=CALENDAR_MAX_AGE_DAYS)]
+    due.sort(key=lambda item: (item[0], item[1]))
+    return [job for _, _, job in due[:max(0, budget)]]
+
+
+def fetch_calendars(http, log, key, budget, adults, previous, fetched, start, end, stay_min, stay_max):
+    """Calendriers de prix Google Flights (SerpApi) : un prix réel par date de départ de la période.
+    Renvoie les prix Google Flights à publier, les dates de relevé et le nombre de recherches utilisées."""
     now = utc_now()
-    kept = fresh(previous, "fetchedAt", now)
-    tried = fresh(tried, "at", now)
-    done = set(serp_id(e) for e in kept + tried)
-    dead = dead_routes(tried)
-    if dead:
-        log.info("Google Flights : trajets mis de côté (aucun résultat) : " + ", ".join("%s-%s" % r for r in sorted(dead)))
-    verify = []
-    for a, b in SERP_ROUND_TRIPS:
-        if (a, b) in dead:
-            continue
-        options = [e for e in round_trip if e["from"] == a and e["to"] == b and e.get("source") == "travelpayouts"
-                   and stay_min <= (parse_day(e["back"]) - parse_day(e["out"])).days <= stay_max
-                   and serp_id(e) not in done]
-        if options:
-            verify.append(min(options, key=lambda e: e["price"]))
-    verify.sort(key=lambda e: e["price"])
-    verify_routes = set((e["from"], e["to"]) for e in verify)
-    covered = set((e["from"], e["to"]) for e in kept)
-    probes = [p for p in probe_candidates(start, end, stay_min, stay_max, today, dead | verify_routes)
-              if serp_id(p) not in done]
-    probes.sort(key=lambda p: ((p["from"], p["to"]) in covered, p["order"]))
-    candidates = verify + probes
+    plan = calendar_plan(calendar_jobs(start, end, stay_min, stay_max), fetched, budget, now)
+    if not plan:
+        log.info("Calendriers Google Flights : tous relevés depuis moins de %d jours" % CALENDAR_MAX_AGE_DAYS)
+    quotes = fresh(previous, "fetchedAt", now)
     used = 0
-    for c in candidates:
-        if used >= budget:
-            break
-        one_way = not c.get("back")
-        label = "%s-%s %s%s" % (c["from"], c["to"], c["out"], "" if one_way else "/" + c["back"])
-        query = {"engine": "google_flights", "hl": "fr", "gl": "fr", "currency": "EUR", "deep_search": "true",
-                 "type": "2" if one_way else "1", "departure_id": AIRPORTS[c["from"]][1],
-                 "arrival_id": AIRPORTS[c["to"]][1], "outbound_date": c["out"], "adults": adults, "api_key": key}
-        if not one_way:
-            query["return_date"] = c["back"]
+    for job in plan:
+        query = {"engine": "google_flights_calendar", "type": "2" if job["stay"] is None else "1",
+                 "departure_id": CALENDAR_IDS.get(job["from"], AIRPORTS[job["from"]][0]),
+                 "arrival_id": CALENDAR_IDS.get(job["to"], AIRPORTS[job["to"]][0]),
+                 "date_range_start": job["start"].isoformat(), "date_range_end": job["end"].isoformat(),
+                 "currency": "EUR", "hl": "fr", "gl": "fr", "adults": adults, "api_key": key}
+        if job["stay"] is not None:
+            query["round_trip_days"] = job["stay"]
+        label = "%s-%s %s" % (job["from"], job["to"], ("%d jours" % job["stay"]) if job["stay"] else "aller simple")
         used += 1
         data = http.get_json("https://serpapi.com/search.json?" + urllib.parse.urlencode(query),
-                             "SerpApi " + label, timeout=120)
-        options = ((data or {}).get("best_flights") or []) + ((data or {}).get("other_flights") or [])
-        priced = [o for o in options if o.get("price")]
-        if not priced:
-            tried.append({"from": c["from"], "to": c["to"], "out": c["out"], "back": c.get("back"), "at": iso_now()})
-            log.warning("Google Flights %s : aucun prix (pas refait avant 10 jours)" % label)
+                             "Calendrier Google Flights " + label, timeout=120)
+        if data is None or (data.get("error") and "returned any results" not in data.get("error", "")):
+            log.warning("Calendrier Google Flights %s : %s" % (label, (data or {}).get("error", "pas de réponse")))
             continue
-        best = min(priced, key=lambda o: o["price"])
-        airlines = []
-        for seg in best.get("flights") or []:
-            if seg.get("airline") and seg["airline"] not in airlines:
-                airlines.append(seg["airline"])
-        entry = {"from": c["from"], "to": c["to"], "price": round(best["price"] / max(1, adults), 2),
-                 "source": "serpapi", "carrier": airlines[0] if airlines else None, "detail": " + ".join(airlines),
-                 "link": ((data or {}).get("search_metadata") or {}).get("google_flights_url"), "fetchedAt": iso_now()}
-        if one_way:
-            entry["day"] = c["out"]
+        stamp = iso_now()
+        fetched[job["key"]] = stamp
+        # Les nouveaux prix remplacent ceux du même calendrier.
+        if job["stay"] is None:
+            quotes = [q for q in quotes if not (q["from"] == job["from"] and q["to"] == job["to"] and not q.get("back"))]
         else:
-            entry["out"], entry["back"] = c["out"], c["back"]
-        kept.append(entry)
-        compare = ("Aviasales : %s" % euro(c["price"] * adults)) if c.get("price") else "sondage, pas de prix Aviasales"
-        log.info("Google Flights %s : %s (%s)" % (label, euro(best["price"]), compare))
+            quotes = [q for q in quotes if not (q["from"] == job["from"] and q["to"] == job["to"] and q.get("back")
+                                                 and (parse_day(q["back"]) - parse_day(q["out"])).days == job["stay"])]
+        found = []
+        for entry in data.get("prices") or []:
+            price, out = entry.get("price"), entry.get("outbound_date")
+            if not price or not out:
+                continue
+            quote = {"from": job["from"], "to": job["to"], "price": round(float(price) / max(1, adults), 2),
+                     "source": "serpapi", "detail": "Google Flights, calendrier des prix", "fetchedAt": stamp}
+            if job["stay"] is None:
+                quote["day"] = out
+            else:
+                if not entry.get("return_date"):
+                    continue
+                quote["out"], quote["back"] = out, entry["return_date"]
+            found.append(quote)
+        quotes.extend(found)
+        if found:
+            best = min(found, key=lambda q: q["price"])
+            when = best.get("day") or "%s - %s" % (best["out"], best["back"])
+            log.info("Calendrier Google Flights %s : %d dates, dès %s (%s)" % (label, len(found), euro(best["price"] * adults), when))
+        else:
+            log.warning("Calendrier Google Flights %s : aucun vol trouvé" % label)
     account = http.get_json("https://serpapi.com/account.json?" + urllib.parse.urlencode({"api_key": key}),
                             "SerpApi quota", quiet=True) or {}
-    return kept, tried, used, account.get("total_searches_left", account.get("plan_searches_left"))
+    return quotes, fetched, used, account.get("total_searches_left", account.get("plan_searches_left"))
+
+
+def fetch_rate(http, log):
+    """Taux de change réel euro/ariary (open.er-api.com, gratuit, sans clé)."""
+    data = http.get_json("https://open.er-api.com/v6/latest/EUR", "Taux de change euro/ariary") or {}
+    rate = (data.get("rates") or {}).get("MGA")
+    if data.get("result") != "success" or not rate:
+        log.warning("Taux de change euro/ariary indisponible")
+        return None, None
+    stamp = dt.datetime.fromtimestamp(data.get("time_last_update_unix", time.time()), dt.timezone.utc)
+    log.info("Taux de change : 1 EUR = %s MGA" % round(rate))
+    return rate, stamp.replace(tzinfo=None, microsecond=0).isoformat() + "Z"
 
 
 # --------------------------------------------------------------------------- sorties
@@ -578,7 +571,7 @@ def write_report(path, feed, log, serp_left):
     lines += ["| Source | Prix ou horaires |", "|---|---|",
               "| Vols aller simple (Aviasales) | %d |" % stats["oneWay"],
               "| Vols aller-retour (Aviasales) | %d |" % stats["roundTrip"],
-              "| Vols vérifiés sur Google Flights | %d |" % stats["serpapi"],
+              "| Vols Google Flights (calendriers) | %d |" % stats["serpapi"],
               "| FlixBus | %d |" % stats["bus"],
               "| Horaires SNCF | %d |" % stats["schedules"], ""]
     stay_min, stay_max = feed["stay"]["min"], feed["stay"]["max"]
@@ -606,6 +599,11 @@ def write_report(path, feed, log, serp_left):
     if feed["trainGrid"]:
         lines += ["", "## Grille officielle SNCF (2nde, tarif normal)", ""]
         lines += ["- %s : %s à %s" % (k, euro(v["min"]), euro(v["max"])) for k, v in sorted(feed["trainGrid"].items())]
+    if feed.get("mgaPerEur"):
+        lines += ["", "Taux de change : 1 € = %d Ar (%s)." % (round(feed["mgaPerEur"]), feed.get("mgaRateAt") or "")]
+    if feed.get("calendarFetched"):
+        lines += ["", "## Calendriers Google Flights relevés", ""]
+        lines += ["- %s : %s" % (k, v) for k, v in sorted(feed["calendarFetched"].items())]
     if serp_left is not None:
         lines += ["", "Recherches SerpApi restantes ce mois-ci : %s." % serp_left]
     if log.errors or log.warnings:
@@ -669,7 +667,8 @@ def main():
     feed = {"version": FEED_VERSION, "generatedAt": iso_now(),
             "period": {"start": start.isoformat(), "end": end.isoformat()},
             "stay": {"min": stay_min, "max": stay_max}, "adults": adults,
-            "oneWay": [], "roundTrip": [], "bus": [], "trainGrid": {}, "schedules": [], "sncfWindow": None}
+            "oneWay": [], "roundTrip": [], "bus": [], "trainGrid": {}, "schedules": [], "sncfWindow": None,
+            "mgaPerEur": None, "mgaRateAt": None, "calendarFetched": {}}
 
     try:
         feed["trainGrid"] = fetch_sncf_grid(http, log)
@@ -695,17 +694,18 @@ def main():
             log.error("Horaires SNCF : %s" % exc)
     else:
         log.warning("Pas de clé SNCF : horaires des trains non mis à jour")
+    feed["mgaPerEur"], feed["mgaRateAt"] = fetch_rate(http, log)
     serp_key = config.get("SERPAPI_KEY", "")
     serp_left = None
     previous_serp = [e for e in previous.get("roundTrip", []) + previous.get("oneWay", []) if e.get("source") == "serpapi"]
     serp_quotes = fresh(previous_serp, "fetchedAt", utc_now())
-    feed["serpTried"] = fresh(previous.get("serpTried", []), "at", utc_now())
+    feed["calendarFetched"] = dict(previous.get("calendarFetched") or {})
     if serp_key and not args.quick:
         try:
             budget = int(config.get("SERPAPI_DAILY_LIMIT") or 5)
-            serp_quotes, feed["serpTried"], used, serp_left = verify_serpapi(
-                http, log, serp_key, budget, adults, feed["roundTrip"], previous_serp, feed["serpTried"],
-                stay_min, stay_max, start, end, today)
+            serp_quotes, feed["calendarFetched"], used, serp_left = fetch_calendars(
+                http, log, serp_key, budget, adults, previous_serp, feed["calendarFetched"],
+                start, end, stay_min, stay_max)
             log.info("SerpApi : %d recherche(s) utilisée(s), %s restante(s)" % (used, serp_left))
         except Exception as exc:
             log.error("SerpApi : %s" % exc)

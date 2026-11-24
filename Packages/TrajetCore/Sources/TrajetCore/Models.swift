@@ -54,6 +54,10 @@ public struct AirportCode: Sendable, Hashable {
     public let serpapi: String
     /// Code Skyscanner (minuscules).
     public let skyscanner: String
+    /// Identifiant pour le calendrier des prix Google Flights (un seul lieu : code aéroport ou ville « /m/… »).
+    public var calendar: String? = nil
+
+    public var calendarID: String { calendar ?? serpapi }
 }
 
 public struct Place: Sendable, Identifiable {
@@ -63,6 +67,7 @@ public struct Place: Sendable, Identifiable {
     /// Niveau d'éloignement depuis Toulouse : un trajet aller ne revient jamais à un niveau inférieur.
     public let tier: Int
     public let airport: AirportCode?
+    // Note : `airport.calendarID` sert au calendrier des prix Google Flights.
     public let flixbusCityID: String?
     /// Nom de ville pour BlaBlaCar.
     public let cityName: String
@@ -71,13 +76,13 @@ public struct Place: Sendable, Identifiable {
 }
 
 public enum PriceKind: String, Sendable, Codable {
-    /// Prix des vols par API (Travelpayouts, SerpApi).
+    /// Prix des vols relevés en ligne (Google Flights via SerpApi, Aviasales via Travelpayouts).
     case flight
-    /// Prix FlixBus en direct.
+    /// Prix FlixBus relevés en ligne.
     case flixbus
-    /// Fourchette estimée (pas d'API publique).
-    case estimate
-    /// Tarif fixe connu.
+    /// Pas de prix publié en ligne (vente sur place, billets pas encore en vente) : aucun prix n'est inventé.
+    case offline
+    /// Tarif officiel publié (en euros dans `priceMin`, ou en ariary dans `tariffMGA`).
     case tariff
 }
 
@@ -110,6 +115,10 @@ public struct TransportOption: Sendable, Identifiable {
     public let links: [LinkKind]
     /// Mode commercial SNCF (« TGV INOUI », « OUIGO », « Intercités de nuit ») pour les horaires réels.
     public var sncfMode: String? = nil
+    /// Tarif officiel en ariary (converti au taux de change du jour).
+    public var tariffMGA: Double? = nil
+    /// Source du tarif officiel (organisme, date).
+    public var tariffSource: String? = nil
 }
 
 /// Liaison dans les deux sens entre deux lieux, avec une ou plusieurs options.

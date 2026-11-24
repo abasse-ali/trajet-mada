@@ -5,8 +5,9 @@ public enum QuoteSource: String, Codable, Sendable {
     case serpapi
     case flixbus
     case sncf
+    case tariff
 
-    /// Prix vérifié à l'instant (et non tiré d'un cache ou d'une grille).
+    /// Prix relevé directement chez la source (et non tiré d'un cache ou d'un tarif).
     public var isLive: Bool { self == .serpapi || self == .flixbus }
 
     public var label: String {
@@ -15,6 +16,7 @@ public enum QuoteSource: String, Codable, Sendable {
         case .serpapi: return "Google Flights"
         case .flixbus: return "FlixBus"
         case .sncf: return "SNCF open data"
+        case .tariff: return "Tarif officiel"
         }
     }
 }
@@ -50,11 +52,16 @@ public struct PriceBook: Codable, Sendable {
     /// Grilles officielles SNCF par identifiant d'option (« tgv », « ouigo », « intercites-nuit »).
     public var trainGrid: [String: FareRange] = [:]
     public var lastScan: Date?
+    /// Taux de change réel : ariary pour 1 euro, et date du relevé.
+    public var mgaPerEur: Double?
+    public var mgaRateDate: Date?
+    /// Dernier relevé de chaque calendrier de prix Google Flights (clé « PAR>NOS#29 » ou « TNR>DIE#aller »).
+    public var calendarFetched: [String: Date] = [:]
 
     public init() {}
 
     enum CodingKeys: String, CodingKey {
-        case oneWay, roundTrip, bus, trainGrid, lastScan
+        case oneWay, roundTrip, bus, trainGrid, lastScan, mgaPerEur, mgaRateDate, calendarFetched
     }
 
     public init(from decoder: Decoder) throws {
@@ -64,6 +71,21 @@ public struct PriceBook: Codable, Sendable {
         bus = try c.decodeIfPresent([String: [String: Quote]].self, forKey: .bus) ?? [:]
         trainGrid = try c.decodeIfPresent([String: FareRange].self, forKey: .trainGrid) ?? [:]
         lastScan = try c.decodeIfPresent(Date.self, forKey: .lastScan)
+        mgaPerEur = try c.decodeIfPresent(Double.self, forKey: .mgaPerEur)
+        mgaRateDate = try c.decodeIfPresent(Date.self, forKey: .mgaRateDate)
+        calendarFetched = try c.decodeIfPresent([String: Date].self, forKey: .calendarFetched) ?? [:]
+    }
+
+    /// Enregistre un taux de change s'il est plus récent que celui connu.
+    public mutating func setRate(_ rate: Double, at date: Date) {
+        guard rate > 0, (mgaRateDate ?? .distantPast) <= date else { return }
+        mgaPerEur = rate
+        mgaRateDate = date
+    }
+
+    /// Note le relevé d'un calendrier s'il est plus récent.
+    public mutating func markCalendar(_ key: String, at date: Date) {
+        if (calendarFetched[key] ?? .distantPast) < date { calendarFetched[key] = date }
     }
 
     public static func key(_ from: PlaceID, _ to: PlaceID) -> String { "\(from.rawValue)>\(to.rawValue)" }
@@ -107,36 +129,5 @@ public struct PriceBook: Codable, Sendable {
 
     public mutating func putBus(_ quote: Quote, from: PlaceID, to: PlaceID, day: Day) {
         put(quote, in: \.bus, key: Self.key(from, to), sub: day.key)
-    }
-
-    /// Prix médian observé par trajet et par mois (« PAR>TNR#2027-05 ») et par trajet.
-    /// Sert d'estimation réaliste les jours sans prix connu. Un aller-retour réel compte pour
-    /// moitié dans chaque sens (965 € Paris ⇄ Nosy Be donne environ 483 € par trajet).
-    public func calibration() -> [String: Double] {
-        var buckets: [String: [Double]] = [:]
-        for (route, days) in oneWay {
-            for (day, quote) in days where quote.price > 0 {
-                buckets["\(route)#\(day.prefix(7))", default: []].append(quote.price)
-                buckets[route, default: []].append(quote.price)
-            }
-        }
-        for (route, pairs) in roundTrip {
-            let ends = route.split(separator: ">").map(String.init)
-            guard ends.count == 2 else { continue }
-            let reverse = "\(ends[1])>\(ends[0])"
-            for (pair, quote) in pairs where quote.price > 0 {
-                let days = pair.split(separator: "|").map(String.init)
-                guard days.count == 2 else { continue }
-                let half = quote.price / 2
-                buckets["\(route)#\(days[0].prefix(7))", default: []].append(half)
-                buckets["\(reverse)#\(days[1].prefix(7))", default: []].append(half)
-                buckets[route, default: []].append(half)
-                buckets[reverse, default: []].append(half)
-            }
-        }
-        return buckets.mapValues { values in
-            let sorted = values.sorted()
-            return sorted[sorted.count / 2]
-        }
     }
 }

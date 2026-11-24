@@ -136,7 +136,14 @@ struct SearchView: View {
                         }
                         .pickerStyle(.segmented)
                         .id("results")
-                        Toggle("Seulement des vols à prix réel", isOn: $model.onlyRealFlights)
+                        Toggle(isOn: $model.onlyComplete) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Seulement des prix réels")
+                                Text("Masque les trajets dont une étape n'a pas de prix publié (taxi-brousse, train pas encore en vente…)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     } header: {
                         Text("\(model.sortedResults.count) allers-retours")
                     } footer: {
@@ -251,9 +258,16 @@ struct TripRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline) {
-                Text(Fmt.euro(trip.total))
-                    .font(.title3.bold())
-                    .monospacedDigit()
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(Fmt.euro(trip.total))
+                        .font(.title3.bold())
+                        .monospacedDigit()
+                    if !trip.isComplete {
+                        Text("+ \(trip.unpriced) étape\(trip.unpriced > 1 ? "s" : "") sans prix publié")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                    }
+                }
                 Spacer()
                 HStack(spacing: 4) {
                     Icon("ui.calendar", size: 13, color: .secondary)
@@ -271,9 +285,9 @@ struct TripRow: View {
                 RouteChain(steps: trip.inbound)
             }
             FlowLayout(spacing: 6, lineSpacing: 6) {
-                Pill(text: "\(Int((trip.realShare * 100).rounded())) % prix réels",
-                     icon: trip.realShare >= 0.75 ? "ui.check" : "ui.info",
-                     color: trip.realShare >= 0.75 ? .green : (trip.realShare >= 0.4 ? .teal : .orange))
+                if trip.isComplete {
+                    Pill(text: "100 % prix réels", icon: "ui.check", color: .green)
+                }
                 Pill(text: "\(trip.tickets) billet\(trip.tickets > 1 ? "s" : "")", icon: "ui.ticket")
                 if !trip.rtTickets.isEmpty {
                     Pill(text: "billet aller-retour", icon: "ui.swap", color: .teal)
