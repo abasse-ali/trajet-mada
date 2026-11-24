@@ -332,6 +332,7 @@ struct StepRow: View {
             case .serpapi: label = "Google Flights (ce vol)"
             case .travelpayouts: label = "Offre Aviasales"
             case .sncf: label = "SNCF"
+            case .tariff: label = "Tarif officiel"
             }
             links.append(BookingLink(label: label, url: url, prefilled: true))
         }

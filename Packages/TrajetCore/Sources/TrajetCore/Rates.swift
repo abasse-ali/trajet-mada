@@ -49,7 +49,8 @@ extension Collector {
             }
             count += 1
         }
-        book.markCalendar(job.key, at: date)
+        // Calendrier vide (trajet que Google Flights ne propose pas) : pas de nouvel essai avant 14 jours.
+        book.markCalendar(job.key, at: count > 0 ? date : date.addingTimeInterval(10 * 86_400))
         return count
     }
 }

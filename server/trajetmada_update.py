@@ -543,7 +543,10 @@ def fetch_calendars(http, log, key, budget, adults, previous, fetched, start, en
             when = best.get("day") or "%s - %s" % (best["out"], best["back"])
             log.info("Calendrier Google Flights %s : %d dates, dès %s (%s)" % (label, len(found), euro(best["price"] * adults), when))
         else:
-            log.warning("Calendrier Google Flights %s : aucun vol trouvé" % label)
+            # Trajet que Google Flights ne propose pas : pas de nouvel essai avant 14 jours.
+            later = utc_now() + dt.timedelta(days=10)
+            fetched[job["key"]] = later.isoformat() + "Z"
+            log.warning("Calendrier Google Flights %s : aucun vol trouvé (nouvel essai dans 14 jours)" % label)
     account = http.get_json("https://serpapi.com/account.json?" + urllib.parse.urlencode({"api_key": key}),
                             "SerpApi quota", quiet=True) or {}
     return quotes, fetched, used, account.get("total_searches_left", account.get("plan_searches_left"))

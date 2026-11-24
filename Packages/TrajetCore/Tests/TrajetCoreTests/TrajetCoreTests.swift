@@ -197,14 +197,22 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(other.price, 0)
     }
 
-    func testLiveQuoteBeatsCachedQuote() {
+    func testCheapestRecentRealPriceWins() {
         var book = PriceBook()
         let day = Day(year: 2027, month: 5, day: 10)
-        book.putOneWay(Quote(price: 400, source: .travelpayouts), from: .parisAirports, to: .tana, day: day)
+        // Sources différentes, prix récents : le moins cher des prix réels est gardé.
+        book.putOneWay(Quote(price: 135, source: .travelpayouts), from: .tana, to: .nosyBe, day: day)
+        book.putOneWay(Quote(price: 701, source: .serpapi), from: .tana, to: .nosyBe, day: day)
+        XCTAssertEqual(book.oneWay["TNR>NOS"]?[day.key]?.price, 135)
+        // Un prix de plus de 7 jours cède la place à un relevé récent, même plus cher.
+        book.putOneWay(Quote(price: 400, source: .travelpayouts, fetchedAt: Date(timeIntervalSinceNow: -8 * 86_400)),
+                       from: .parisAirports, to: .tana, day: day)
         book.putOneWay(Quote(price: 520, source: .serpapi), from: .parisAirports, to: .tana, day: day)
-        book.putOneWay(Quote(price: 300, source: .travelpayouts), from: .parisAirports, to: .tana, day: day)
         XCTAssertEqual(book.oneWay["PAR>TNR"]?[day.key]?.price, 520)
-        XCTAssertEqual(book.oneWay["PAR>TNR"]?[day.key]?.source, .serpapi)
+        // Même source : le nouveau relevé remplace l'ancien (le prix a changé).
+        book.putOneWay(Quote(price: 610, source: .serpapi, fetchedAt: Date(timeIntervalSinceNow: 7200)),
+                       from: .parisAirports, to: .tana, day: day)
+        XCTAssertEqual(book.oneWay["PAR>TNR"]?[day.key]?.price, 610)
     }
 
     func testOfficialTariffs() {
@@ -388,6 +396,13 @@ final class CollectorTests: XCTestCase {
         Collector.store([SerpApiClient.CalendarPrice(out: Day(year: 2027, month: 6, day: 2), back: nil, price: 152)],
                         for: oneWayJob, adults: 1, into: &book)
         XCTAssertEqual(book.oneWay["TNR>DIE"]?["2027-06-02"]?.price, 152)
+        // Calendrier vide : pas de nouvel essai avant 14 jours.
+        let empty = Collector.calendarJobs(params: params).first { $0.key == "DIE>TNR#aller" }!
+        Collector.store([], for: empty, adults: 1, into: &book, at: at)
+        XCTAssertTrue(Collector.calendarPlan(params: params, fetched: book.calendarFetched, budget: 50,
+                                             now: at.addingTimeInterval(13 * 86_400)).allSatisfy { $0.key != "DIE>TNR#aller" })
+        XCTAssertTrue(Collector.calendarPlan(params: params, fetched: book.calendarFetched, budget: 50,
+                                             now: at.addingTimeInterval(15 * 86_400)).contains { $0.key == "DIE>TNR#aller" })
     }
 
     func testSchedulesMergeAndCodable() throws {

@@ -99,21 +99,24 @@ public struct PriceBook: Codable, Sendable {
          bus.values.reduce(0) { $0 + $1.count })
     }
 
-    /// Règles de remplacement :
-    /// - un prix vérifié (Google Flights, FlixBus) l'emporte sur un prix en cache, sauf s'il a plus de 2 jours de retard ;
-    /// - entre deux prix de même nature, le plus récent l'emporte ;
-    /// - dans un même relevé (moins d'une heure d'écart), on garde le moins cher.
+    /// Règles de remplacement (tous ces prix sont réels) :
+    /// - même source : le relevé le plus récent remplace l'ancien ; dans un même relevé (moins d'une heure), le moins cher ;
+    /// - sources différentes (Google Flights, Aviasales…) : le moins cher des prix de moins de 7 jours.
     public mutating func put(_ quote: Quote, in store: WritableKeyPath<PriceBook, [String: [String: Quote]]>,
-                             key: String, sub: String) {
+                             key: String, sub: String, now: Date = Date()) {
         if let current = self[keyPath: store][key]?[sub] {
             let newer = quote.fetchedAt.timeIntervalSince(current.fetchedAt)
-            if quote.source.isLive != current.source.isLive {
-                if current.source.isLive && newer < 172_800 { return }
-                if !current.source.isLive && newer < -172_800 { return }
-            } else if abs(newer) < 3600 {
-                if current.price <= quote.price { return }
-            } else if newer < 0 {
-                return
+            if quote.source == current.source {
+                if abs(newer) < 3600 {
+                    if current.price <= quote.price { return }
+                } else if newer < 0 {
+                    return
+                }
+            } else {
+                let week: TimeInterval = 7 * 86_400
+                let currentRecent = now.timeIntervalSince(current.fetchedAt) < week
+                let quoteRecent = now.timeIntervalSince(quote.fetchedAt) < week
+                if currentRecent && (!quoteRecent || current.price <= quote.price) { return }
             }
         }
         self[keyPath: store][key, default: [:]][sub] = quote
